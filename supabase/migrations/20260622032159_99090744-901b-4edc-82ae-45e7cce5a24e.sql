@@ -1,0 +1,1 @@
+REVOKE ALL ON FUNCTION public.approve_payment_by_pi(TEXT) FROM PUBLIC, anon, authenticated;
