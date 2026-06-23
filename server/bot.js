@@ -2493,6 +2493,7 @@ export function setupBot(app, pool, writePool, publicPool) {
           [{ text: '🚀 PUXAR LOGINS', callback_data: 'puxar_logins', style: 'primary' }],
           [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
           [{ text: '📜 COMANDOS', callback_data: 'list_commands', style: 'primary' }],
+          [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
           [{ text: '➕ ADICIONAR AO GRUPO', url: `https://t.me/${TOKEN.split(':')[0]}?startgroup=true`, style: 'primary' }]
         ];
         const markup = {
@@ -3566,6 +3567,94 @@ export function setupBot(app, pool, writePool, publicPool) {
             ]
           }
         })
+      );
+    }
+
+    // Botão MONITORAR — Monitoramento em tempo real
+    if (data === 'monitor_menu') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      return bot.sendMessage(chatId,
+        `🔔 *MONITORAMENTO EM TEMPO REAL*\n\n` +
+        `Escolha o que deseja monitorar:\n\n` +
+        `📧 *EMAIL* - Verificar se está em breaches\n` +
+        `🔐 *SENHA* - Verificar se foi comprometida\n` +
+        `📞 *TELEFONE* - Monitorar atividades\n` +
+        `🌐 *DOMÍNIO* - Verificar status e DNS\n` +
+        `🔗 *URL* - Verificar disponibilidade e segurança`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '📧 MONITORAR EMAIL', callback_data: 'mon_email', style: 'primary' }],
+              [{ text: '🔐 MONITORAR SENHA', callback_data: 'mon_password', style: 'primary' }],
+              [{ text: '📞 MONITORAR TELEFONE', callback_data: 'mon_phone', style: 'primary' }],
+              [{ text: '🌐 MONITORAR DOMÍNIO', callback_data: 'mon_domain', style: 'primary' }],
+              [{ text: '🔗 MONITORAR URL', callback_data: 'mon_url', style: 'primary' }],
+              [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+            ]
+          }
+        })
+      );
+    }
+
+    // Handler para monitorar EMAIL
+    if (data === 'mon_email') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      userStates[chatId] = { action: 'monitor_email' };
+      return bot.sendMessage(chatId,
+        `📧 *MONITORAR EMAIL*\n\n` +
+        `Digite o email que deseja monitorar:`,
+        opts({ parse_mode: 'Markdown' })
+      );
+    }
+
+    // Handler para monitorar SENHA
+    if (data === 'mon_password') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      userStates[chatId] = { action: 'monitor_password' };
+      return bot.sendMessage(chatId,
+        `🔐 *MONITORAR SENHA*\n\n` +
+        `Digite a senha que deseja verificar:`,
+        opts({ parse_mode: 'Markdown' })
+      );
+    }
+
+    // Handler para monitorar TELEFONE
+    if (data === 'mon_phone') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      userStates[chatId] = { action: 'monitor_phone' };
+      return bot.sendMessage(chatId,
+        `📞 *MONITORAR TELEFONE*\n\n` +
+        `Digite o telefone que deseja monitorar (formato: +55 XX 9XXXX-XXXX):`,
+        opts({ parse_mode: 'Markdown' })
+      );
+    }
+
+    // Handler para monitorar DOMÍNIO
+    if (data === 'mon_domain') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      userStates[chatId] = { action: 'monitor_domain' };
+      return bot.sendMessage(chatId,
+        `🌐 *MONITORAR DOMÍNIO*\n\n` +
+        `Digite o domínio que deseja monitorar (ex: example.com):`,
+        opts({ parse_mode: 'Markdown' })
+      );
+    }
+
+    // Handler para monitorar URL
+    if (data === 'mon_url') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      userStates[chatId] = { action: 'monitor_url' };
+      return bot.sendMessage(chatId,
+        `🔗 *MONITORAR URL*\n\n` +
+        `Digite a URL que deseja monitorar (ex: https://example.com):`,
+        opts({ parse_mode: 'Markdown' })
       );
     }
 
