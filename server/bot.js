@@ -568,6 +568,20 @@ const pendingBoleto = new Map(); // chatId -> { planIdx, plan }
 const pendingSearch = new Map(); // `${chatId}_${userId}` -> fieldName
 const pendingConsulta = new Map(); // `${chatId}_${userId}` -> apiKey
 
+// ──────────────────────────────────────────────────────
+// MAPEAMENTO DE CONSULTAS SIPNI (PUXAR DADOS)
+// ──────────────────────────────────────────────────────
+const SIPNI_CONSULTAS = {
+  cpf:      { name: '🔢 CPF', param: 'cpf', endpoint: 'consulta/cpf' },
+  nome:     { name: '👤 Nome', param: 'nome', endpoint: 'consulta/nome' },
+  mae:      { name: '👩 Nome da Mãe', param: 'nome_mae', endpoint: 'consulta/mae' },
+  pai:      { name: '👨 Nome do Pai', param: 'nome_pai', endpoint: 'consulta/pai' },
+  rg:       { name: '🆔 RG', param: 'rg', endpoint: 'consulta/rg' },
+  tel:      { name: '📞 Telefone', param: 'telefone', endpoint: 'consulta/tel' },
+  sit_cpf:  { name: '✅ Situação CPF', param: 'cpf', endpoint: 'consulta/situacao_cpf' },
+  cbo:      { name: '💼 Profissão (CBO)', param: 'cbo', endpoint: 'consulta/cbo' }
+};
+
 // ── Nossa própria API de consulta (cache local no Railway) ──
 const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3001}`;
 const CONSULTA_APIS = {
@@ -3334,61 +3348,36 @@ export function setupBot(app, pool, writePool, publicPool) {
           }
         }
         
-        // Tratamento SIPNI - CPF
-        if (pendingConsultaKey === 'sipni_cpf') {
-          const cpf = text.trim().replace(/\D/g, '').slice(-11);
-          if (!cpf || cpf.length !== 11) {
-            return bot.sendMessage(chatId, `❌ CPF inválido. Use formato: 12345678901`, opts());
-          }
-          
-          bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
-          try {
-            const result = await querySIPNI('consulta/cpf', { cpf });
-            if (result.error) {
-              return bot.sendMessage(chatId, `❌ Erro ao consultar SIPNI: ${result.error}`, opts());
-            }
-            
-            let msg = `🏥 *Resultado SIPNI - CPF*\n\n`;
-            msg += `CPF: \`${cpf}\`\n`;
-            msg += `📊 Dados: ${JSON.stringify(result).substring(0, 500)}...`;
-            return bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown' }));
-            
-          } catch (e) {
-            console.error('Erro ao consultar SIPNI CPF:', e.message);
-            return bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
-          }
-        }
-        
-        // Tratamento SIPNI - Vacinação
-        if (pendingConsultaKey === 'sipni_vacinacao') {
-          const cpf = text.trim().replace(/\D/g, '').slice(-11);
-          if (!cpf || cpf.length !== 11) {
-            return bot.sendMessage(chatId, `❌ CPF inválido. Use formato: 12345678901`, opts());
-          }
-          
-          bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
-          try {
-            const result = await querySIPNI('consulta/vacinacao', { cpf });
-            if (result.error) {
-              return bot.sendMessage(chatId, `❌ Erro ao consultar SIPNI: ${result.error}`, opts());
-            }
-            
-            let msg = `💉 *Resultado SIPNI - Vacinação*\n\n`;
-            msg += `CPF: \`${cpf}\`\n`;
-            msg += `📊 Dados: ${JSON.stringify(result).substring(0, 500)}...`;
-            return bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown' }));
-            
-          } catch (e) {
-            console.error('Erro ao consultar SIPNI Vacinação:', e.message);
-            return bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
-          }
-        }
-        
         // Tratamento original para outras consultas
         const api = CONSULTA_APIS[pendingConsultaKey];
         if (!api) return bot.sendMessage(chatId, `❌ API inválida.`, opts());
         const value = text.trim();
         if (!value || value.length < 2) return bot.sendMessage(chatId, `❌ Valor inválido.`, opts());
+        
+        // Verifica se é uma consulta SIPNI
+        if (SIPNI_CONSULTAS[pendingConsultaKey]) {
+          const sipniQuery = SIPNI_CONSULTAS[pendingConsultaKey];
+          bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
+          
+          try {
+            const result = await querySIPNI(sipniQuery.endpoint, { [sipniQuery.param]: value });
+            if (result.error) {
+              return bot.sendMessage(chatId, `❌ Erro ao consultar SIPNI: ${result.error}`, opts());
+            }
+            
+            let msg = `🏥 *Resultado SIPNI - ${sipniQuery.name}*\n\n`;
+            msg += `🔍 Busca: \`${value}\`\n\n`;
+            msg += `📊 *Dados encontrados:*\n`;
+            msg += `\`\`\`json\n${JSON.stringify(result, null, 2).substring(0, 1000)}\n\`\`\``;
+            
+            return bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown' }));
+          } catch (e) {
+            console.error(`Erro ao consultar SIPNI ${pendingConsultaKey}:`, e.message);
+            return bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
+          }
+        }
+        
+        // Tratamento original para APIs locais
         bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
         const cacheKey = `${pendingConsultaKey}:${value}`;
         const cached = consultaCache[cacheKey];
@@ -3721,8 +3710,7 @@ export function setupBot(app, pool, writePool, publicPool) {
         [{ text: '🆔 RG',  callback_data: 'consultar_rg',  style: 'primary' }, { text: '📞 Telefone', callback_data: 'consultar_tel', style: 'primary' }],
         [{ text: '✅ Situação CPF', callback_data: 'consultar_sit_cpf', style: 'primary' }, { text: '💼 Profissão', callback_data: 'consultar_cbo', style: 'primary' }],
         [{ text: '📸 Puxar Foto', callback_data: 'consultar_foto', style: 'primary' }],
-        [{ text: '🏥 SIPNI CPF', callback_data: 'sipni_cpf', style: 'primary' }, { text: '💉 SIPNI Vacinação', callback_data: 'sipni_vacinacao', style: 'primary' }],
-        [{ text: ' MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+        [{ text: '� MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
       ]}})
     );
   }
@@ -4174,19 +4162,32 @@ export function setupBot(app, pool, writePool, publicPool) {
     // Botão de consulta externa — pergunta o valor
     if (data.startsWith('consultar_')) {
       const apiKey = data.substring(10);
-      const api = CONSULTA_APIS[apiKey];
-      if (!api) return;
-      bot.answerCallbackQuery(callbackQuery.id, { text: `Digite o ${api.param}...` }).catch(() => {});
+      const sipniQuery = SIPNI_CONSULTAS[apiKey];
+      if (!sipniQuery) return;
+      
+      bot.answerCallbackQuery(callbackQuery.id, { text: `Digite o ${sipniQuery.param}...` }).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       pendingConsulta.set(userKey, apiKey);
+      
       const replyMarkup = cbIsGroup
         ? { force_reply: true, selective: true }
         : { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] };
       const extraText = cbIsGroup ? `_Responda a esta mensagem com o valor ou digite:_ \`/consulta ${apiKey} valor\`` : `_Ou clique no botão abaixo para sair._`;
 
+      const examples = {
+        cpf: '12345678901',
+        nome: 'João Silva',
+        mae: 'Maria Silva',
+        pai: 'José Silva',
+        rg: '123456789',
+        tel: '11999999999',
+        sit_cpf: '12345678901',
+        cbo: 'Programador'
+      };
+
       return bot.sendMessage(chatId,
-        `🔎 *${api.name}*\n\nEnvie o *${api.param}* para consultar:\n\n` +
-        `_Exemplo: \`${apiKey === 'cep' ? '13405188' : apiKey === 'tel' || apiKey === 'tel_cpf' ? '42984138233' : 'valor'}\`_\n\n` + extraText,
+        `${sipniQuery.name} *- Consultar no SIPNI*\n\nEnvie o *${sipniQuery.param}* para consultar:\n\n` +
+        `_Exemplo: \`${examples[apiKey] || 'valor'}\`_\n\n` + extraText,
         opts({ parse_mode: 'Markdown', reply_markup: replyMarkup })
       );
     }
