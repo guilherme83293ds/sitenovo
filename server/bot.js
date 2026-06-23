@@ -2430,6 +2430,21 @@ export function setupBot(app, pool, writePool, publicPool) {
         } catch (e) {
           console.log('⚠️ [BOT] Erro ao resetar menu button:', e.message);
         }
+
+        // Busca total de registros em tempo real
+        let totalRecords = 0;
+        try {
+          const results = await Promise.allSettled(
+            pool.pools.map(p => p.query(`SELECT reltuples::bigint AS count FROM pg_class WHERE relname = 'credentials'`))
+          );
+          results.forEach((r) => {
+            const count = r.status === 'fulfilled' ? Number(r.value.rows[0]?.count || 0) : 0;
+            totalRecords += count;
+          });
+        } catch (e) {
+          console.log('⚠️ Erro ao buscar total de registros:', e.message);
+        }
+
         // Mostra status do usuário
         const userAccess = await checkUserAccess(chatId, groupChats.has(chatId));
         let statusLine, previewText;
@@ -2460,10 +2475,12 @@ export function setupBot(app, pool, writePool, publicPool) {
         }
 
         const inGroup = groupChats.has(chatId);
+        const totalFormatted = totalRecords.toLocaleString('pt-BR');
         const helpText =
           `💀 𝗔𝗦𝗦𝗘𝗠𝗕𝗟𝗬 𝗟𝗢𝗚𝗦\n\n` +
           `🟢 *𝗠𝗘𝗡𝗨 𝗣𝗥𝗜𝗡𝗖𝗜𝗣𝗔𝗟*\n\n` +
-          `${statusLine}\n\n` +
+          `${statusLine}\n` +
+          `📊 *Total records (${totalFormatted})*\n\n` +
           `${previewText}\n\n` +
           `📌 *Navegue usando os botões abaixo:*\n` +
           `🔓 /LOGIN - Acessar com credenciais\n` +
@@ -2475,7 +2492,7 @@ export function setupBot(app, pool, writePool, publicPool) {
           [{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }],
           [{ text: '🚀 PUXAR LOGINS', callback_data: 'puxar_logins', style: 'primary' }],
           [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
-          [{ text: '📈 TOTAL', callback_data: 'cmd_total', style: 'primary' }]
+          [{ text: '➕ ADICIONAR AO GRUPO', url: `https://t.me/${TOKEN.split(':')[0]}?startgroup=true`, style: 'primary' }]
         ];
         const markup = {
           reply_markup: {
