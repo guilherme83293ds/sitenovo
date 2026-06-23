@@ -9,14 +9,28 @@ const pools = new Map<string, pg.Pool>();
 function getPool(url: string, name: string): pg.Pool {
   let p = pools.get(name);
   if (!p) {
-    p = new Pool({ connectionString: url, max: 2, idleTimeoutMillis: 30000, connectionTimeoutMillis: 15000 });
+    const directUrl = url.replace(/-pooler/, '').replace(/&?channel_binding=require/gi, '');
+    p = new Pool({
+      connectionString: directUrl,
+      max: 5,
+      idleTimeoutMillis: 600000,
+      connectionTimeoutMillis: 5000,
+      query_timeout: 15000,
+      keepAlive: true,
+      ssl: { rejectUnauthorized: false },
+    });
     pools.set(name, p);
   }
   return p;
 }
 
 function getUrls(): string[] {
-  return [process.env.BREACH_DB1, process.env.BREACH_DB2, process.env.BREACH_DB3, process.env.BREACH_DB4].filter(Boolean) as string[];
+  return [
+    process.env.DATABASE_URL_1,
+    process.env.DATABASE_URL_2,
+    process.env.DATABASE_URL_3,
+    process.env.DATABASE_URL_4,
+  ].filter(Boolean) as string[];
 }
 
 function getConsultaUrl(): string | undefined {
@@ -26,7 +40,7 @@ function getConsultaUrl(): string | undefined {
 async function queryAll(sql: string, params: any[]): Promise<{ rows: Row[]; errors: string[] }> {
   const urls = getUrls();
   if (urls.length === 0) {
-    const status = ["BREACH_DB1","BREACH_DB2","BREACH_DB3","BREACH_DB4"]
+    const status = ["DATABASE_URL_1","DATABASE_URL_2","DATABASE_URL_3","DATABASE_URL_4"]
       .map(k => `${k}=${process.env[k as keyof typeof process.env] ? 'definida' : 'undefined'}`).join(', ');
     return { rows: [], errors: [`Nenhuma conexão — ${status}`] };
   }

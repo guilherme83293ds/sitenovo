@@ -1,6 +1,6 @@
+import pg from "pg";
 import { createFileRoute } from "@tanstack/react-router";
 import { parsePhoneNumberFromString } from "libphonenumber-js";
-import { createClient } from "@supabase/supabase-js";
 import { buscaEmail, buscaTelefone, buscaSenha, buscaCPF, buscaUsername, buscaNome, formatPairs } from "@/lib/breach-db";
 
 function countResults(r: { sections?: Array<{ fields?: unknown[]; list?: unknown[]; links?: unknown[] }> }): number {
@@ -12,7 +12,7 @@ function countResults(r: { sections?: Array<{ fields?: unknown[]; list?: unknown
 }
 
 type Field = { label: string; value: string; mono?: boolean; warn?: boolean; ok?: boolean };
-type Section = { title: string; icon?: string; collapsible?: boolean; fields?: Field[]; list?: string[]; links?: { label: string; url: string }[] };
+type Section = { title: string; icon?: string; collapsible?: boolean; fields?: Field[]; list?: string[]; creds?: { email: string; password: string; telefone?: string; url?: string; domain?: string }[]; links?: { label: string; url: string }[] };
 type OsintResult = {
   ok: boolean;
   tool: string;
@@ -87,19 +87,82 @@ async function dnsHasMx(domain: string): Promise<{ has: boolean; first?: string 
   } catch { return { has: false }; }
 }
 
-async function toolEmail(email: string): Promise<OsintResult> {
+async function toolEmail(email: string, fast?: boolean): Promise<OsintResult> {
   const sections: Section[] = [];
   const sources: string[] = [];
   const domain = (email.split("@")[1] || "").toLowerCase().trim();
 
-  // Cada operação com seu próprio timeout, falha isolada não derruba tudo
+  // fast mode: igual ao bot — 1 pool direto, sem enrichment
+  if (fast) {
+    const { Pool } = pg;
+    const url = (process.env.DATABASE_URL_1 || process.env.DATABASE_URL || "").replace(/-pooler/, '');
+    const pool = new Pool({ connectionString: url, max: 1, connectionTimeoutMillis: 5000, query_timeout: 10000 });
+    let rows: any[] = [];
+    let dbErrors: string[] = [];
+    try {
+      // exact match como o bot faz (email = $1, não LOWER)
+      let res = await pool.query(`SELECT * FROM credentials WHERE email = $1 LIMIT 200`, [email]);
+      if (res.rows.length === 0 && email.length >= 6) {
+        res = await pool.query(`SELECT * FROM credentials WHERE email ILIKE $1 LIMIT 200`, [`%${email}%`]);
+      }
+      rows = res.rows;
+    } catch (e) {
+      dbErrors = [`DB: ${e instanceof Error ? e.message : String(e)}`];
+    } finally {
+      pool.end().catch(() => {});
+    }
+    if (rows.length > 0) {
+      const unique = new Map<string, { senha: string; telefone?: string; fonte?: string }>();
+      for (const r of rows) {
+        if (!unique.has(r.email + ":" + r.senha)) {
+          unique.set(r.email + ":" + r.senha, { senha: r.senha, telefone: r.telefone, fonte: r.fonte });
+        }
+      }
+      sections.push({
+        title: `Credenciais encontradas (${rows.length})`,
+        fields: [
+          { label: "Total de pares", value: String(rows.length) },
+          { label: "Pares únicos", value: String(unique.size) },
+        ],
+        list: [...unique.entries()].slice(0, 200).map(([key, val], i) => {
+          const [e, p] = key.split(":");
+          const [local, dom] = e.split("@");
+          const maskedEmail = `${local.slice(0, 2)}${"•".repeat(Math.min(local.length - 2, 6))}@${dom}`;
+          const maskedPass = p.length > 4
+            ? p.slice(0, 1) + "•".repeat(Math.min(p.length - 2, 6)) + p.slice(-1)
+            : "•".repeat(p.length);
+          const tel = val.telefone ? ` · tel: ${val.telefone.slice(0, 4)}••••` : "";
+          return `#${i + 1}  ${maskedEmail}:${maskedPass}${tel}`;
+        }),
+      });
+sources.push("Database");
+    }
+    if (dbErrors.length > 0) {
+      sections.push({ title: " — Erros", fields: dbErrors.map(e => ({ label: "Erro", value: e, warn: true })) });
+    }
+    return {
+      ok: rows.length > 0, tool: "email", query: email,
+      summary: `${rows.length} registros no DB`,
+      sections, sources,
+    };
+  }
+
+  // DB query rápida (pool único, igual ao bot) + enrichment em paralelo
+  const { Pool } = pg;
+  const dbUrl = (process.env.DATABASE_URL_1 || process.env.DATABASE_URL || "").replace(/-pooler/, '');
+  const pool = new Pool({ connectionString: dbUrl, max: 1, connectionTimeoutMillis: 5000, query_timeout: 10000 });
   const [dbResult, mx, hudsonRockResult] = await Promise.allSettled([
-    Promise.race([
-      buscaEmail(email),
-      new Promise<{ rows: any[]; errors: string[] }>((_, reject) =>
-        setTimeout(() => reject(new Error("DB timeout")), 35000)
-      ),
-    ]),
+    (async () => {
+      try {
+        let res = await pool.query(`SELECT email, senha, telefone, fonte, url FROM credentials WHERE email = $1 LIMIT 200`, [email]);
+        if (res.rows.length === 0 && email.length >= 6) {
+          res = await pool.query(`SELECT email, senha, telefone, fonte, url FROM credentials WHERE email ILIKE $1 LIMIT 200`, [`%${email}%`]);
+        }
+        return { rows: res.rows, errors: [] as string[] };
+      } catch (e) {
+        return { rows: [], errors: [`DB: ${e instanceof Error ? e.message : String(e)}`] };
+      } finally { pool.end().catch(() => {}); }
+    })(),
     Promise.race([
       dnsHasMx(domain),
       new Promise<{ has: boolean; first?: string }>((_, reject) =>
@@ -116,7 +179,6 @@ async function toolEmail(email: string): Promise<OsintResult> {
     ]),
   ]);
 
-  // Extrair valores dos resultados
   const db = dbResult.status === "fulfilled" ? dbResult.value : { rows: [], errors: [dbResult.reason?.message || "DB falhou"] };
   const mxVal = mx.status === "fulfilled" ? mx.value : { has: false };
   const hudsonRock = hudsonRockResult.status === "fulfilled" ? hudsonRockResult.value : null;
@@ -125,24 +187,47 @@ async function toolEmail(email: string): Promise<OsintResult> {
   const isDisposable = DISPOSABLE_DOMAINS.has(domain);
   const isFree = FREE_PROVIDERS.has(domain);
   sections.push({
-    title: "Disposable Check",
+    title: "Identificação do Domínio",
     fields: [
+      { label: "Domínio", value: domain || "—", mono: true },
       { label: "Descartável?", value: isDisposable ? "Sim" : "Não", warn: isDisposable, ok: !isDisposable },
       { label: "Provedor gratuito?", value: isFree ? "Sim" : "Não" },
     ],
   });
   sources.push("Lista de domínios descartáveis");
 
-  // MX
+  // MX + SMTP
   sections.push({
-    title: "SMTP Verify — Domínio",
+    title: "Verificação SMTP",
     fields: [
-      { label: "Domínio", value: domain || "—", mono: true },
       { label: "MX encontrado?", value: mxVal.has ? "Sim" : "Não", ok: mxVal.has, warn: !mxVal.has },
       { label: "Servidor MX", value: mxVal.first || "—", mono: true },
     ],
   });
   sources.push("Cloudflare DNS (MX)");
+
+  // Gravatar profile
+  const md5 = await sha1Hex(email.trim().toLowerCase());
+  const gravatarUrl = `https://gravatar.com/${md5.toLowerCase().slice(0, 32)}.json`;
+  let gravatarProfile: { displayName?: string; aboutMe?: string; location?: string; urls?: { value: string; title: string }[] } | null = null;
+  try {
+    const gr = await fetch(gravatarUrl, { signal: AbortSignal.timeout(3000) });
+    if (gr.ok) {
+      const gd = await gr.json();
+      gravatarProfile = gd?.entry?.[0] ?? null;
+    }
+  } catch {}
+  if (gravatarProfile) {
+    const gf = [
+      gravatarProfile.displayName && { label: "Nome", value: gravatarProfile.displayName },
+      gravatarProfile.aboutMe && { label: "Sobre", value: gravatarProfile.aboutMe },
+      gravatarProfile.location && { label: "Localização", value: gravatarProfile.location },
+    ].filter(Boolean) as { label: string; value: string }[];
+    if (gf.length > 0) {
+      sections.push({ title: "Gravatar — Perfil", fields: gf });
+      sources.push("Gravatar");
+    }
+  }
 
   // HudsonRock
   if (hudsonRock) {
@@ -162,87 +247,230 @@ async function toolEmail(email: string): Promise<OsintResult> {
     sources.push("HudsonRock");
   }
 
-  // SCAM/ABUSE — referências cruzadas em bases públicas de fraude
+  // SCAM/ABUSE
   sections.push({
-    title: "Scam / Abuse — Referências cruzadas",
+    title: "Verificação de Fraude",
     icon: `https://www.google.com/s2/favicons?domain=scamsearch.io&sz=64`,
     collapsible: true,
     fields: [
-      { label: "ScamSearch", value: "Banco de dados colaborativo de e-mails reportados em golpes" },
-      { label: "ScamAdviser", value: "Pontuação de confiança e histórico de denúncias" },
-      { label: "CleanTalk", value: "Lista negra anti-spam usada por +500k sites" },
-      { label: "StopForumSpam", value: "E-mails associados a spam/abuse em fóruns" },
-      { label: "AbuseIPDB Email", value: "Cruzamento de e-mails com IPs reportados por abuse" },
+      { label: "ScamSearch", value: "E-mails reportados em golpes" },
+      { label: "ScamAdviser", value: "Pontuação de confiança" },
+      { label: "CleanTalk", value: "Lista negra anti-spam" },
+      { label: "StopForumSpam", value: "Spam/abuse em fóruns" },
+      { label: "AbuseIPDB", value: "IPs reportados por abuse" },
     ],
     links: [
       { label: "ScamSearch", url: `https://scamsearch.io/search_report?searchoption=all&search=${encodeURIComponent(email)}` },
-      { label: "ScamAdviser", url: `https://www.scamadviser.com/check-website/${encodeURIComponent(email.split("@")[1] || "")}` },
+      { label: "ScamAdviser", url: `https://www.scamadviser.com/check-website/${encodeURIComponent(domain)}` },
       { label: "CleanTalk", url: `https://cleantalk.org/blacklists/${encodeURIComponent(email)}` },
       { label: "StopForumSpam", url: `https://www.stopforumspam.com/search?q=${encodeURIComponent(email)}` },
-      { label: "AbuseIPDB", url: `https://www.abuseipdb.com/check/${encodeURIComponent(email.split("@")[1] || "")}` },
+      { label: "AbuseIPDB", url: `https://www.abuseipdb.com/check/${encodeURIComponent(domain)}` },
     ],
   });
   sources.push("ScamSearch", "ScamAdviser", "CleanTalk", "StopForumSpam", "AbuseIPDB");
 
-  // Identidade pública (links externos)
-  const md5 = await sha1Hex(email.trim().toLowerCase());
+  // HIBP Breach Check
+  const hibpHash = await sha1Hex(email.trim().toLowerCase());
+  const hibpPrefix = hibpHash.slice(0, 5);
+  const hibpSuffix = hibpHash.slice(5);
+  let hibpCount = 0;
+  try {
+    const hibpRes = await fetch(`https://api.pwnedpasswords.com/range/${hibpPrefix}`, { signal: AbortSignal.timeout(5000) });
+    if (hibpRes.ok) {
+      const hibpText = await hibpRes.text();
+      const hibpLine = hibpText.split("\n").find(l => l.toUpperCase().startsWith(hibpSuffix));
+      hibpCount = hibpLine ? parseInt(hibpLine.split(":")[1] ?? "0", 10) : 0;
+    }
+  } catch {}
   sections.push({
-    title: "Identidade pública — Links",
+    title: "Have I Been Pwned",
+    fields: [
+      { label: "Vazamentos", value: hibpCount > 0 ? `${hibpCount.toLocaleString("pt-BR")} ocorrências` : "Não encontrado", warn: hibpCount > 0, ok: hibpCount === 0 },
+    ],
+  });
+  sources.push("HIBP");
+
+  // EmailRep reputation
+  let emailRep: { reputation?: string; suspicious?: boolean; details?: any } | null = null;
+  try {
+    const er = await fetch(`https://emailrep.io/${encodeURIComponent(email)}`, { signal: AbortSignal.timeout(5000) });
+    if (er.ok) emailRep = await er.json();
+  } catch {}
+  if (emailRep) {
+    sections.push({
+      title: "EmailRep — Reputação",
+      fields: [
+        { label: "Reputação", value: emailRep.reputation || "desconhecido", warn: emailRep.suspicious, ok: !emailRep.suspicious },
+        { label: "Suspeito?", value: emailRep.suspicious ? "Sim" : "Não", warn: emailRep.suspicious, ok: !emailRep.suspicious },
+      ],
+    });
+    sources.push("EmailRep");
+  }
+
+  // DNS Records
+  try {
+    const dnsRes = await fetch(`https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=TXT`, { signal: AbortSignal.timeout(3000) });
+    if (dnsRes.ok) {
+      const dnsData = await dnsRes.json();
+      const txtRecords = (dnsData.Answer || []).map((a: any) => a.data).filter((d: string) => d.includes("v=spf1") || d.includes("v=DMARC"));
+      if (txtRecords.length > 0) {
+        sections.push({
+          title: "DNS — Registros TXT",
+          list: txtRecords.slice(0, 5),
+        });
+        sources.push("Google DNS");
+      }
+    }
+  } catch {}
+
+  // Social media por email
+  const socialSites = [
+    { name: "Twitter/X", domain: "x.com", url: `https://x.com/search?q=${encodeURIComponent(email)}` },
+    { name: "LinkedIn", domain: "linkedin.com", url: `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(email)}` },
+    { name: "Facebook", domain: "facebook.com", url: `https://www.facebook.com/search/top/?q=${encodeURIComponent(email)}` },
+    { name: "Instagram", domain: "instagram.com", url: `https://www.instagram.com/accounts/login/` },
+    { name: "Reddit", domain: "reddit.com", url: `https://www.reddit.com/search/?q=${encodeURIComponent(email)}` },
+    { name: "Pinterest", domain: "pinterest.com", url: `https://www.pinterest.com/search/pins/?q=${encodeURIComponent(email)}` },
+    { name: "TikTok", domain: "tiktok.com", url: `https://www.tiktok.com/search?q=${encodeURIComponent(email)}` },
+    { name: "YouTube", domain: "youtube.com", url: `https://www.youtube.com/results?search_query=${encodeURIComponent(email)}` },
+  ];
+  sections.push({
+    title: "Redes Sociais",
+    collapsible: true,
+    links: socialSites.map(s => ({ label: s.name, url: s.url })),
+  });
+  sources.push(...socialSites.map(s => s.name));
+
+  // Busca pública - Buscadores
+  sections.push({
+    title: "Buscadores",
+    links: [
+      { label: "Google", url: `https://www.google.com/search?q=${encodeURIComponent(`"${email}"`)}` },
+      { label: "Google Dork (site:)", url: `https://www.google.com/search?q=${encodeURIComponent(`site:pastebin.com "${email}"`)}` },
+      { label: "Bing", url: `https://www.bing.com/search?q=${encodeURIComponent(`"${email}"`)}` },
+      { label: "DuckDuckGo", url: `https://duckduckgo.com/?q=${encodeURIComponent(`"${email}"`)}` },
+      { label: "Yandex", url: `https://yandex.com/search/?text=${encodeURIComponent(`"${email}"`)}` },
+      { label: "Startpage", url: `https://www.startpage.com/sp/search?q=${encodeURIComponent(`"${email}"`)}` },
+      { label: "SearXNG", url: `https://searx.be/search?q=${encodeURIComponent(`"${email}"`)}` },
+    ],
+  });
+  sources.push("Google", "Bing", "DuckDuckGo", "Yandex", "Startpage", "SearXNG");
+
+  // Busca pública - Código e Repositórios
+  sections.push({
+    title: "Código e Repositórios",
+    links: [
+      { label: "GitHub Commits", url: `https://github.com/search?q=${encodeURIComponent(email)}&type=commits` },
+      { label: "GitHub Code", url: `https://github.com/search?q=${encodeURIComponent(email)}&type=code` },
+      { label: "GitHub Issues", url: `https://github.com/search?q=${encodeURIComponent(email)}&type=issues` },
+      { label: "GitLab", url: `https://gitlab.com/search?search=${encodeURIComponent(email)}` },
+      { label: "Bitbucket", url: `https://bitbucket.org/repo/search?q=${encodeURIComponent(email)}` },
+      { label: "SourceForge", url: `https://sourceforge.net/directory/?q=${encodeURIComponent(email)}` },
+      { label: "Codeberg", url: `https://codeberg.org/search?q=${encodeURIComponent(email)}` },
+      { label: "Gitea", url: `https://gitea.com/search?q=${encodeURIComponent(email)}` },
+    ],
+  });
+  sources.push("GitHub", "GitLab", "Bitbucket", "SourceForge", "Codeberg", "Gitea");
+
+  // Busca pública - Documentos e Pastes
+  sections.push({
+    title: "Documentos e Pastes",
+    links: [
+      { label: "Pastebin", url: `https://pastebin.com/search?q=${encodeURIComponent(email)}` },
+      { label: "Ghostbin", url: `https://ghostbin.com/search?q=${encodeURIComponent(email)}` },
+      { label: "JustPaste", url: `https://justpaste.it/search/${encodeURIComponent(email)}` },
+      { label: "Gist GitHub", url: `https://gist.github.com/search?q=${encodeURIComponent(email)}` },
+      { label: "Slexy", url: `https://slexy.org/search?q=${encodeURIComponent(email)}` },
+      { label: "Pastelink", url: `https://pastelink.net/search?q=${encodeURIComponent(email)}` },
+      { label: "Google Docs", url: `https://www.google.com/search?q=${encodeURIComponent(`"${email}" site:docs.google.com`)}` },
+      { label: "Google Sheets", url: `https://www.google.com/search?q=${encodeURIComponent(`"${email}" site:sheets.google.com`)}` },
+    ],
+  });
+  sources.push("Pastebin", "Ghostbin", "JustPaste", "Gist", "Slexy", "Pastelink", "Google Docs", "Google Sheets");
+
+  // Busca pública - Vazamentos e Inteligência
+  sections.push({
+    title: "Bases de Vazamentos e Inteligência",
     links: [
       { label: "Gravatar", url: `https://gravatar.com/${md5.toLowerCase().slice(0, 32)}` },
-      { label: "Google", url: `https://www.google.com/search?q=${encodeURIComponent(`"${email}"`)}` },
-      { label: "GitHub commits", url: `https://github.com/search?q=${encodeURIComponent(email)}&type=commits` },
       { label: "LeakLookup", url: `https://leak-lookup.com/?q=${encodeURIComponent(email)}` },
       { label: "DeHashed", url: `https://dehashed.com/search?query=${encodeURIComponent(email)}` },
       { label: "IntelX", url: `https://intelx.io/?s=${encodeURIComponent(email)}` },
+      { label: "Snusbase", url: `https://snusbase.com/` },
+      { label: "BreachDirectory", url: `https://breachdirectory.org/` },
+      { label: "HudsonRock", url: `https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-email?email=${encodeURIComponent(email)}` },
+      { label: "Have I Been Pwned", url: `https://haveibeenpwned.com/account/${encodeURIComponent(email)}` },
+      { label: "BreachAlarm", url: `https://breachalarm.com/?email=${encodeURIComponent(email)}` },
+      { label: "LeakedSource", url: `https://leakedsource.ru/search?q=${encodeURIComponent(email)}` },
+      { label: "Vigilante.pw", url: `https://vigilante.pw/search?q=${encodeURIComponent(email)}` },
+      { label: "WeLeakInfo", url: `https://weleakinfo.com/search?q=${encodeURIComponent(email)}` },
+      { label: "Scattered Secrets", url: `https://scatteredsecrets.com/search?q=${encodeURIComponent(email)}` },
+      { label: "Identity Leaked", url: `https://identityleaked.com/search?q=${encodeURIComponent(email)}` },
+      { label: "Hashes.org", url: `https://hashes.org/search.php?search=${encodeURIComponent(email)}` },
+      { label: "CrackStation", url: `https://crackstation.net/search?q=${encodeURIComponent(email)}` },
     ],
   });
-  sources.push("Gravatar", "Google", "GitHub", "LeakLookup", "DeHashed", "IntelX");
+  sources.push("Gravatar", "LeakLookup", "DeHashed", "IntelX", "Snusbase", "BreachDirectory", "HudsonRock", "HIBP", "BreachAlarm", "LeakedSource", "Vigilante", "WeLeakInfo", "ScatteredSecrets", "IdentityLeaked", "Hashes.org", "CrackStation");
 
-  // BreachDB (já resolvido no Promise.all)
+  // Busca pública - Documentos públicos e registros
+  sections.push({
+    title: "Registros Públicos e Documentos",
+    links: [
+      { label: "Receita Federal", url: `https://www.google.com/search?q=${encodeURIComponent(`"${email}" site:gov.br`)}` },
+      { label: "JusBrasil", url: `https://www.jusbrasil.com.br/busca?q=${encodeURIComponent(email)}` },
+      { label: "Escavador", url: `https://www.escavador.com/busca?q=${encodeURIComponent(email)}` },
+      { label: "Diário Oficial", url: `https://www.google.com/search?q=${encodeURIComponent(`"${email}" site:diariooficial`)}` },
+      { label: "TSE", url: `https://www.google.com/search?q=${encodeURIComponent(`"${email}" site:tse.jus.br`)}` },
+      { label: "TJ/SP", url: `https://www.google.com/search?q=${encodeURIComponent(`"${email}" site:tjsp.jus.br`)}` },
+      { label: "CNJ", url: `https://www.google.com/search?q=${encodeURIComponent(`"${email}" site:cnj.jus.br`)}` },
+      { label: "MPF", url: `https://www.google.com/search?q=${encodeURIComponent(`"${email}" site:mpf.mp.br`)}` },
+    ],
+  });
+  sources.push("Receita Federal", "JusBrasil", "Escavador", "Diário Oficial", "TSE", "TJ/SP", "CNJ", "MPF");
+
+  //  results — SEM mascaramento, com creds estruturados
   const { rows: dbRows, errors: dbErrors } = db;
   if (dbRows.length > 0) {
-    const unique = new Map<string, { senha: string; telefone?: string; fonte?: string }>();
+    const unique = new Map<string, { senha: string; telefone?: string; url?: string }>();
     for (const r of dbRows) {
       if (!unique.has(r.email + ":" + r.senha)) {
-        unique.set(r.email + ":" + r.senha, { senha: r.senha, telefone: r.telefone, fonte: r.fonte });
+        unique.set(r.email + ":" + r.senha, { senha: r.senha, telefone: r.telefone, url: r.url });
       }
     }
+    const extractDomain = (raw?: string): string => {
+      if (!raw) return "";
+      try {
+        const u = raw.includes("://") ? new URL(raw) : new URL(`https://${raw}`);
+        return u.hostname.replace(/^www\./, "");
+      } catch {
+        return raw.replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/^www\./, "").split("/")[0];
+      }
+    };
     sections.splice(0, 0, {
-      title: `BreachDB — Credenciais encontradas (${dbRows.length})`,
-      fields: [
-        { label: "Total de pares", value: String(dbRows.length) },
-        { label: "Pares únicos", value: String(unique.size) },
-      ],
-      list: [...unique.entries()].slice(0, 200).map(([key, val], i) => {
+      title: `Credenciais encontradas`,
+      creds: [...unique.entries()].slice(0, 200).map(([key, val]) => {
         const [e, p] = key.split(":");
-        const [local, dom] = e.split("@");
-        const maskedEmail = `${local.slice(0, 2)}${"•".repeat(Math.min(local.length - 2, 6))}@${dom}`;
-        const maskedPass = p.length > 4
-          ? p.slice(0, 1) + "•".repeat(Math.min(p.length - 2, 6)) + p.slice(-1)
-          : "•".repeat(p.length);
-        const tel = val.telefone ? ` · tel: ${val.telefone.slice(0, 4)}••••` : "";
-        return `#${i + 1}  ${maskedEmail}:${maskedPass}${tel}`;
+        return { email: e, password: p, telefone: val.telefone, url: val.url, domain: extractDomain(val.url) };
       }),
     });
-    sources.unshift("BreachDB (Neon)");
+    sources.unshift(" (Neon)");
   }
   if (dbErrors.length > 0) {
     sections.push({
-      title: "BreachDB — Erros de conexão",
+      title: " — Erros de conexão",
       fields: dbErrors.map(e => ({ label: "Erro", value: e, warn: true })),
     });
   }
 
   return {
     ok: true, tool: "email", query: email,
-    summary: `${sections.length} módulos consultados · ${dbRows.length} registros no DB`,
+    summary: "",
     sections, sources,
   };
 }
 
 async function toolPassword(password: string): Promise<OsintResult> {
-  // Dispara BreachDB em paralelo com HIBP + heurísticas
+  // Dispara  em paralelo com HIBP + heurísticas
   const dbPromise = buscaSenha(password);
   const hashPromise = sha1Hex(password);
 
@@ -311,11 +539,11 @@ async function toolPassword(password: string): Promise<OsintResult> {
     })),
   ];
 
-  // BreachDB (disparado em paralho no início)
+  //  (disparado em paralho no início)
   const { rows: dbRows, errors: dbErrors } = await dbPromise;
   if (dbErrors.length > 0) {
     sections.push({
-      title: "BreachDB — Erros de conexão",
+      title: " — Erros de conexão",
       fields: dbErrors.map(e => ({ label: "Erro", value: e, warn: true })),
     });
   }
@@ -327,7 +555,7 @@ async function toolPassword(password: string): Promise<OsintResult> {
       uniqueEmails.add(r.email);
     }
     const breachSection: Section = {
-      title: `BreachDB — Senha encontrada em ${dbRows.length} registros`,
+      title: ` — Senha encontrada em ${dbRows.length} registros`,
       fields: [
         { label: "Total de ocorrências", value: String(dbRows.length), warn: true },
         { label: "Pares únicos", value: String(unique.size), warn: true },
@@ -344,7 +572,7 @@ async function toolPassword(password: string): Promise<OsintResult> {
         return `#${i + 1}  ${maskedEmail}:${maskedPass}${f}`;
       }),
     };
-    const summaryExtra = ` · ${dbRows.length} registros no BreachDB`;
+    const summaryExtra = ` · ${dbRows.length} registros no `;
     return {
       ok: true,
       tool: "password",
@@ -353,7 +581,7 @@ async function toolPassword(password: string): Promise<OsintResult> {
         ? `Senha vazada ${count.toLocaleString("pt-BR")} vezes · força: ${strength}`
         : `Senha não encontrada em vazamentos · força: ${strength}`) + summaryExtra,
       sections: [breachSection, ...sections],
-      sources: ["BreachDB (Neon)", "HIBP Pwned Passwords", ...REFS.map(r => r.name)],
+      sources: [" (Neon)", "HIBP Pwned Passwords", ...REFS.map(r => r.name)],
     };
   }
   return {
@@ -602,68 +830,170 @@ async function toolPhone(raw: string): Promise<OsintResult> {
     return { ok: false, tool: "phone", query: raw, error: "Número inválido", sections: [], sources: [] };
   }
   const dbPromise = buscaTelefone(raw);
+  const ddd = String(p.nationalNumber).slice(0, 2);
+
+  const BRAZIL_CARRIERS: Record<string, string> = {
+    "11": "São Paulo", "21": "Rio de Janeiro", "31": "Belo Horizonte", "41": "Curitiba",
+    "51": "Porto Alegre", "61": "Brasília", "71": "Salvador", "81": "Recife",
+    "85": "Fortaleza", "62": "Goiânia", "69": "Porto Velho", "92": "Manaus",
+    "98": "São Luís", "77": "Vitória da Conquista", "86": "Teresina",
+    "27": "Vitória", "48": "Florianópolis", "63": "Palmas", "67": "Campo Grande",
+    "66": "Cuiabá", "65": "Tucuruí", "73": "Ilhéus", "74": "Juazeiro",
+    "75": "Feira de Santana", "79": "Aracaju", "82": "Maceió", "83": "João Pessoa",
+    "84": "Natal", "87": "Caruaru", "88": "Juazeiro do Norte", "89": "Picos",
+    "96": "Macapá", "97": "Coari", "99": "Imperatriz",
+  };
+
+  const BRAZIL_CARRIER_PREFIXES: Record<string, string> = {
+    "Claro": ["99", "98", "97", "96"],
+    "Vivo": ["95", "94", "93"],
+    "TIM": ["92", "91", "90"],
+    "Oi": ["99", "98"],
+  };
+
+  const regionName = BRAZIL_CARRIERS[ddd] || `DDD ${ddd}`;
+  const lastDigits = String(p.nationalNumber).slice(2, 4);
+  let carrier = "desconhecida";
+  for (const [name, prefixes] of Object.entries(BRAZIL_CARRIER_PREFIXES)) {
+    if (prefixes.includes(lastDigits)) { carrier = name; break; }
+  }
 
   const sections: Section[] = [
     {
-      title: "Número",
+      title: "Análise do Número",
       fields: [
         { label: "E.164", value: p.number, mono: true },
         { label: "Internacional", value: p.formatInternational(), mono: true },
         { label: "Nacional", value: p.formatNational(), mono: true },
         { label: "País", value: String(p.country || "—") },
-        { label: "DDD/região", value: String(p.nationalNumber).slice(0, 2) },
+        { label: "DDD", value: `${ddd} — ${regionName}` },
+        { label: "Operadora", value: carrier },
         { label: "Tipo", value: String(p.getType() || "desconhecido") },
         { label: "Válido", value: p.isValid() ? "Sim" : "Não", ok: p.isValid(), warn: !p.isValid() },
-        { label: "Possível", value: p.isPossible() ? "Sim" : "Não" },
-      ],
-    },
-    {
-      title: "Busca",
-      links: [
-        { label: "Google", url: `https://www.google.com/search?q=${encodeURIComponent(`"${p.number}" OR "${p.formatNational()}"`)}` },
-        { label: "Truecaller", url: `https://www.truecaller.com/search/br/${encodeURIComponent(p.nationalNumber)}` },
       ],
     },
   ];
   const sources = ["libphonenumber-js"];
 
+  // Busca em múltiplas plataformas
+  const phoneSearch = p.nationalNumber;
+  const phoneFormatted = p.formatNational();
+  sections.push({
+    title: "Busca — Identidade",
+    links: [
+      { label: "Google", url: `https://www.google.com/search?q=${encodeURIComponent(`"${p.number}" OR "${phoneFormatted}"`)}` },
+      { label: "Truecaller", url: `https://www.truecaller.com/search/br/${encodeURIComponent(phoneSearch)}` },
+      { label: "Sync.me", url: `https://sync.me/search/?number=${encodeURIComponent(p.number)}` },
+      { label: "CallerID Test", url: `https://calleridtest.com/Lookup.aspx?number=${encodeURIComponent(p.number)}` },
+      { label: "SpyDialer", url: `https://www.spydialer.com/default.aspx?r=${encodeURIComponent(phoneSearch)}` },
+    ],
+  });
+  sources.push("Google", "Truecaller", "Sync.me", "CallerID", "SpyDialer");
+
+  sections.push({
+    title: "Busca — Redes Sociais",
+    links: [
+      { label: "WhatsApp", url: `https://wa.me/${p.number.replace("+", "")}` },
+      { label: "Telegram", url: `https://t.me/+${p.number.replace("+", "")}` },
+      { label: "Facebook", url: `https://www.facebook.com/search/top/?q=${encodeURIComponent(p.number)}` },
+      { label: "Instagram", url: `https://www.instagram.com/accounts/login/` },
+      { label: "LinkedIn", url: `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(p.number)}` },
+    ],
+  });
+  sources.push("WhatsApp", "Telegram", "Facebook", "Instagram", "LinkedIn");
+
+  sections.push({
+    title: "Busca — Registros",
+    links: [
+      { label: "Receita Federal", url: `https://www.google.com/search?q=${encodeURIComponent(`"${phoneFormatted}" site:gov.br`)}` },
+      { label: "Jusbrasil", url: `https://www.jusbrasil.com.br/busca?q=${encodeURIComponent(p.number)}` },
+      { label: "Escavador", url: `https://www.escavador.com/busca?q=${encodeURIComponent(p.number)}` },
+      { label: "Serasa", url: `https://www.google.com/search?q=${encodeURIComponent(`"${phoneFormatted}" serasa`)}` },
+      { label: "Boa Vista", url: `https://www.google.com/search?q=${encodeURIComponent(`"${phoneFormatted}" "boa vista"`)}` },
+    ],
+  });
+  sources.push("Receita Federal", "Jusbrasil", "Escavador", "Serasa", "Boa Vista");
+
+  // Busca — Documentos e Pastes
+  sections.push({
+    title: "Busca — Documentos e Pastes",
+    links: [
+      { label: "Google (número)", url: `https://www.google.com/search?q=${encodeURIComponent(`"${phoneFormatted}"`)}` },
+      { label: "Google (DDD + número)", url: `https://www.google.com/search?q=${encodeURIComponent(`"${p.number}"`)}` },
+      { label: "Pastebin", url: `https://pastebin.com/search?q=${encodeURIComponent(phoneSearch)}` },
+      { label: "Ghostbin", url: `https://ghostbin.com/search?q=${encodeURIComponent(phoneSearch)}` },
+      { label: "GitHub", url: `https://github.com/search?q=${encodeURIComponent(phoneSearch)}&type=code` },
+      { label: "GitLab", url: `https://gitlab.com/search?search=${encodeURIComponent(phoneSearch)}` },
+      { label: "Google Docs", url: `https://www.google.com/search?q=${encodeURIComponent(`"${phoneFormatted}" site:docs.google.com`)}` },
+    ],
+  });
+  sources.push("Google", "Pastebin", "Ghostbin", "GitHub", "GitLab", "Google Docs");
+
+  // Busca — Bases de Dados e Inteligência
+  sections.push({
+    title: "Busca — Bases de Dados e Inteligência",
+    links: [
+      { label: "LeakLookup", url: `https://leak-lookup.com/?q=${encodeURIComponent(phoneSearch)}` },
+      { label: "DeHashed", url: `https://dehashed.com/search?query=${encodeURIComponent(phoneSearch)}` },
+      { label: "IntelX", url: `https://intelx.io/?s=${encodeURIComponent(phoneSearch)}` },
+      { label: "Snusbase", url: `https://snusbase.com/` },
+      { label: "BreachDirectory", url: `https://breachdirectory.org/` },
+      { label: "HudsonRock", url: `https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-email?email=${encodeURIComponent(phoneSearch)}` },
+      { label: "PhoneInfoga", url: `https://phoneinfoga.com/scan/${encodeURIComponent(phoneSearch)}` },
+      { label: "CrackStation", url: `https://crackstation.net/search?q=${encodeURIComponent(phoneSearch)}` },
+    ],
+  });
+  sources.push("LeakLookup", "DeHashed", "IntelX", "Snusbase", "BreachDirectory", "HudsonRock", "PhoneInfoga", "CrackStation");
+
+  // Busca — Ferramentas de Validação
+  sections.push({
+    title: "Busca — Ferramentas de Validação",
+    links: [
+      { label: "NumVerify", url: `https://numverify.com/php_helper_scripts/phone_api.php?number=${encodeURIComponent(p.number)}` },
+      { label: "AbstractAPI", url: `https://www.abstractapi.com/phone-validation-api` },
+      { label: "Twilio Lookup", url: `https://www.twilio.com/lookup` },
+      { label: "FreeCarrierLookup", url: `https://freecarrierlookup.com/` },
+      { label: "CarrierLookup", url: `https://www.carrierlookup.com/` },
+      { label: "PhoneValidator", url: `https://www.phonevalidator.com/` },
+      { label: "Messente", url: `https://messente.com/phone-number-validation` },
+    ],
+  });
+  sources.push("NumVerify", "AbstractAPI", "Twilio", "FreeCarrierLookup", "CarrierLookup", "PhoneValidator", "Messente");
+
+  // 
   const { rows: dbRows, errors: dbErrors } = await dbPromise;
   if (dbErrors.length > 0) {
     sections.push({
-      title: "BreachDB — Erros de conexão",
+      title: "Erros de conexão",
       fields: dbErrors.map(e => ({ label: "Erro", value: e, warn: true })),
     });
   }
   if (dbRows.length > 0) {
-    const unique = new Map<string, string>();
+    const unique = new Map<string, { email: string; senha: string; url?: string }>();
     for (const r of dbRows) {
-      unique.set(r.email + ":" + r.senha, r.fonte || "");
+      if (!unique.has(r.email + ":" + r.senha)) {
+        unique.set(r.email + ":" + r.senha, { email: r.email, senha: r.senha, url: r.url });
+      }
     }
+    const extractDomain = (raw?: string): string => {
+      if (!raw) return "";
+      try { return new URL(raw.includes("://") ? raw : `https://${raw}`).hostname.replace(/^www\./, ""); } catch { return raw.split("/")[0]; }
+    };
     sections.push({
-      title: `BreachDB — Credenciais encontradas (${dbRows.length})`,
-      fields: [
-        { label: "Total", value: String(dbRows.length), warn: true },
-        { label: "Pares únicos", value: String(unique.size) },
-      ],
-      list: [...unique.entries()].slice(0, 200).map(([key, fonte], i) => {
-        const [e, p] = key.split(":");
-        const [local, dom] = e.split("@");
-        const maskedEmail = `${local.slice(0, 2)}${"•".repeat(Math.min(local.length - 2, 6))}@${dom}`;
-        const maskedPass = p.length > 4
-          ? p.slice(0, 1) + "•".repeat(Math.min(p.length - 2, 6)) + p.slice(-1)
-          : "•".repeat(p.length);
-        const f = fonte ? ` [${fonte}]` : "";
-        return `#${i + 1}  ${maskedEmail}:${maskedPass}${f}`;
+      title: `Credenciais encontradas`,
+      creds: [...unique.entries()].slice(0, 200).map(([key, val]) => {
+        const [e, pw] = key.split(":");
+        return { email: e, password: pw, url: val.url, domain: extractDomain(val.url) };
       }),
     });
-    sources.push("BreachDB (Neon)");
+    sources.push(" (Neon)");
   }
 
   return {
     ok: true,
     tool: "phone",
     query: raw,
-    summary: `${p.country} • ${p.getType() || "desconhecido"} • ${p.isValid() ? "válido" : "inválido"}${dbRows.length > 0 ? ` · ${dbRows.length} registros` : ""}`,
+    summary: `${regionName} • ${carrier} • ${p.isValid() ? "válido" : "inválido"}${dbRows.length > 0 ? ` · ${dbRows.length} registros` : ""}`,
     sections,
     sources,
   };
@@ -690,6 +1020,45 @@ const USERNAME_SITES: { name: string; domain: string; url: (u: string) => string
   { name: "Spotify", domain: "spotify.com", url: (u) => `https://open.spotify.com/user/${u}` },
   { name: "SoundCloud", domain: "soundcloud.com", url: (u) => `https://soundcloud.com/${u}` },
   { name: "Behance", domain: "behance.net", url: (u) => `https://www.behance.net/${u}` },
+  { name: "LinkedIn", domain: "linkedin.com", url: (u) => `https://www.linkedin.com/in/${u}` },
+  { name: "Facebook", domain: "facebook.com", url: (u) => `https://www.facebook.com/${u}` },
+  { name: "Docker Hub", domain: "hub.docker.com", url: (u) => `https://hub.docker.com/u/${u}` },
+  { name: "npm", domain: "npmjs.com", url: (u) => `https://www.npmjs.com/~${u}` },
+  { name: "PyPI", domain: "pypi.org", url: (u) => `https://pypi.org/user/${u}/` },
+  { name: "Keybase", domain: "keybase.io", url: (u) => `https://keybase.io/${u}` },
+  { name: "About.me", domain: "about.me", url: (u) => `https://about.me/${u}` },
+  { name: "Gravatar", domain: "gravatar.com", url: (u) => `https://gravatar.com/${u}` },
+  { name: "Flickr", domain: "flickr.com", url: (u) => `https://www.flickr.com/people/${u}` },
+  { name: "500px", domain: "500px.com", url: (u) => `https://500px.com/p/${u}` },
+  { name: "Patreon", domain: "patreon.com", url: (u) => `https://www.patreon.com/${u}` },
+  { name: "Grindr", domain: "grindr.com", url: (u) => `https://www.grindr.com/profile/${u}` },
+  { name: "Duolingo", domain: "duolingo.com", url: (u) => `https://www.duolingo.com/profile/${u}` },
+  { name: "Codepen", domain: "codepen.io", url: (u) => `https://codepen.io/${u}` },
+  { name: "Slack", domain: "slack.com", url: (u) => `https://${u}.slack.com` },
+  { name: "Notion", domain: "notion.site", url: (u) => `https://${u}.notion.site` },
+  { name: "Linktree", domain: "linktr.ee", url: (u) => `https://linktr.ee/${u}` },
+  { name: "CashApp", domain: "cash.app", url: (u) => `https://cash.app/$${u}` },
+  { name: "Venmo", domain: "venmo.com", url: (u) => `https://venmo.com/${u}` },
+  { name: "OnlyFans", domain: "onlyfans.com", url: (u) => `https://onlyfans.com/${u}` },
+  { name: "Chaturbate", domain: "chaturbate.com", url: (u) => `https://chaturbate.com/${u}` },
+  { name: "Xbox", domain: "xbox.com", url: (u) => `https://www.xbox.com/en-us/play/user/${u}` },
+  { name: "PlayStation", domain: "psnprofiles.com", url: (u) => `https://psnprofiles.com/${u}` },
+  { name: "Roblox", domain: "roblox.com", url: (u) => `https://www.roblox.com/user.aspx?username=${u}` },
+  { name: "Fortnite", domain: "fortniteskins.com", url: (u) => `https://fortniteskins.com/stats/${u}` },
+  { name: "Minecraft", domain: "namemc.com", url: (u) => `https://namemc.com/profile/${u}` },
+  { name: "Chess.com", domain: "chess.com", url: (u) => `https://www.chess.com/member/${u}` },
+  { name: "Letterboxd", domain: "letterboxd.com", url: (u) => `https://letterboxd.com/${u}` },
+  { name: "Goodreads", domain: "goodreads.com", url: (u) => `https://www.goodreads.com/user/show/${u}` },
+  { name: "Strava", domain: "strava.com", url: (u) => `https://www.strava.com/athletes/${u}` },
+  { name: "MyFitnessPal", domain: "myfitnesspal.com", url: (u) => `https://www.myfitnesspal.com/profile/${u}` },
+  { name: "Wattpad", domain: "wattpad.com", url: (u) => `https://www.wattpad.com/user/${u}` },
+  { name: "Archive.org", domain: "archive.org", url: (u) => `https://archive.org/details/@${u}` },
+  { name: "HackerRank", domain: "hackerrank.com", url: (u) => `https://www.hackerrank.com/${u}` },
+  { name: "LeetCode", domain: "leetcode.com", url: (u) => `https://leetcode.com/${u}` },
+  { name: "Codeforces", domain: "codeforces.com", url: (u) => `https://codeforces.com/profile/${u}` },
+  { name: "Kaggle", domain: "kaggle.com", url: (u) => `https://www.kaggle.com/${u}` },
+  { name: "ProductHunt", domain: "producthunt.com", url: (u) => `https://www.producthunt.com/@${u}` },
+  { name: "IndieHackers", domain: "indiehackers.com", url: (u) => `https://www.indiehackers.com/u/${u}` },
   { name: "Dribbble", domain: "dribbble.com", url: (u) => `https://dribbble.com/${u}` },
   { name: "Keybase", domain: "keybase.io", url: (u) => `https://keybase.io/${u}` },
   { name: "Telegram", domain: "t.me", url: (u) => `https://t.me/${u}` },
@@ -700,9 +1069,7 @@ const USERNAME_SITES: { name: string; domain: string; url: (u: string) => string
   { name: "Flickr", domain: "flickr.com", url: (u) => `https://www.flickr.com/people/${u}` },
   { name: "Last.fm", domain: "last.fm", url: (u) => `https://www.last.fm/user/${u}` },
   { name: "Disqus", domain: "disqus.com", url: (u) => `https://disqus.com/by/${u}` },
-  { name: "Kaggle", domain: "kaggle.com", url: (u) => `https://www.kaggle.com/${u}` },
   { name: "CodePen", domain: "codepen.io", url: (u) => `https://codepen.io/${u}` },
-  { name: "Producthunt", domain: "producthunt.com", url: (u) => `https://www.producthunt.com/@${u}` },
   { name: "Mixcloud", domain: "mixcloud.com", url: (u) => `https://www.mixcloud.com/${u}/` },
   { name: "About.me", domain: "about.me", url: (u) => `https://about.me/${u}` },
   { name: "Wattpad", domain: "wattpad.com", url: (u) => `https://www.wattpad.com/user/${u}` },
@@ -713,7 +1080,7 @@ const USERNAME_SITES: { name: string; domain: string; url: (u: string) => string
 
 async function toolUsername(username: string): Promise<OsintResult> {
   const u = username.replace(/^@/, "").trim();
-  // Dispara BreachDB em paralelo com as verificações de plataforma
+  // Dispara  em paralelo com as verificações de plataforma
   const dbPromise = buscaUsername(u);
 
   const checks = await Promise.all(USERNAME_SITES.map(async (s) => {
@@ -743,11 +1110,11 @@ async function toolUsername(username: string): Promise<OsintResult> {
   }));
   const sources = [`Verificação direta em ${checks.length} plataformas`];
 
-  // BreachDB (disparado em paralho no início)
+  //  (disparado em paralho no início)
   const { rows: dbRows, errors: dbErrors } = await dbPromise;
   if (dbErrors.length > 0) {
     sections.push({
-      title: "BreachDB — Erros de conexão",
+      title: " — Erros de conexão",
       fields: dbErrors.map(e => ({ label: "Erro", value: e, warn: true })),
     });
   }
@@ -760,7 +1127,7 @@ async function toolUsername(username: string): Promise<OsintResult> {
       }
     }
     sections.splice(0, 0, {
-      title: `BreachDB — Credenciais com email '${u}@' (${dbRows.length})`,
+      title: ` — Credenciais com email '${u}@' (${dbRows.length})`,
       fields: [
         { label: "Total de pares", value: String(dbRows.length) },
         { label: "Pares únicos", value: String(unique.size) },
@@ -776,7 +1143,7 @@ async function toolUsername(username: string): Promise<OsintResult> {
         return `#${i + 1}  ${maskedEmail}:${maskedPass}${tel}`;
       }),
     });
-    sources.unshift("BreachDB (Neon)");
+    sources.unshift(" (Neon)");
   }
 
   return {
@@ -1180,7 +1547,7 @@ async function buscaUrlDomain(domain: string): Promise<OsintResult> {
 
   const { rows, errors } = await buscaEmail(clean);
   if (errors.length > 0) {
-    sections.push({ title: "BreachDB — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
+    sections.push({ title: " — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
   }
 
   if (rows.length === 0) {
@@ -1188,7 +1555,7 @@ async function buscaUrlDomain(domain: string): Promise<OsintResult> {
       ok: true, tool: "url_domain", query: clean,
       summary: `Nenhum resultado para o domínio "${clean}"`,
       sections: [{ title: "Resultado", fields: [{ label: "Status", value: "Nenhum registro encontrado", warn: true }] }],
-      sources: ["BreachDB (Neon)"],
+      sources: [" (Neon)"],
     };
   }
 
@@ -1198,7 +1565,7 @@ async function buscaUrlDomain(domain: string): Promise<OsintResult> {
   const topEmails = [...uniqueEmails].slice(0, 20);
 
   sections.push({
-    title: `BreachDB — Domínio "${clean}"`,
+    title: ` — Domínio "${clean}"`,
     fields: [
       { label: "Total de registros", value: String(rows.length), warn: true },
       { label: "Emails únicos", value: String(uniqueEmails.size) },
@@ -1210,7 +1577,7 @@ async function buscaUrlDomain(domain: string): Promise<OsintResult> {
       return `${local.slice(0, 2)}${"•".repeat(Math.min(local.length - 2, 6))}@${dom}`;
     }),
   });
-  sources.push("BreachDB (Neon)");
+  sources.push(" (Neon)");
 
   return {
     ok: true, tool: "url_domain", query: clean,
@@ -1225,7 +1592,7 @@ async function buscaInurl(pattern: string): Promise<OsintResult> {
 
   const { rows, errors } = await buscaEmail(pattern);
   if (errors.length > 0) {
-    sections.push({ title: "BreachDB — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
+    sections.push({ title: " — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
   }
 
   if (rows.length === 0) {
@@ -1233,7 +1600,7 @@ async function buscaInurl(pattern: string): Promise<OsintResult> {
       ok: true, tool: "inurl", query: pattern,
       summary: `Nenhum resultado contendo "${pattern}"`,
       sections: [{ title: "Resultado", fields: [{ label: "Status", value: "Nenhum registro encontrado", warn: true }] }],
-      sources: ["BreachDB (Neon)"],
+      sources: [" (Neon)"],
     };
   }
 
@@ -1244,7 +1611,7 @@ async function buscaInurl(pattern: string): Promise<OsintResult> {
   }
 
   sections.push({
-    title: `BreachDB — URLs contendo "${pattern}"`,
+    title: ` — URLs contendo "${pattern}"`,
     fields: [
       { label: "Total de registros", value: String(rows.length), warn: true },
       { label: "Registros únicos", value: String(unique.size) },
@@ -1258,7 +1625,7 @@ async function buscaInurl(pattern: string): Promise<OsintResult> {
       return `#${i + 1}  ${maskedEmail}:${maskedPass}`;
     }),
   });
-  sources.push("BreachDB (Neon)");
+  sources.push(" (Neon)");
 
   return {
     ok: true, tool: "inurl", query: pattern,
@@ -1274,7 +1641,7 @@ async function buscaInmail(provider: string): Promise<OsintResult> {
 
   const { rows, errors } = await buscaEmail(q);
   if (errors.length > 0) {
-    sections.push({ title: "BreachDB — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
+    sections.push({ title: " — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
   }
 
   if (rows.length === 0) {
@@ -1282,7 +1649,7 @@ async function buscaInmail(provider: string): Promise<OsintResult> {
       ok: true, tool: "inmail", query: q,
       summary: `Nenhum email com provedor "${q}"`,
       sections: [{ title: "Resultado", fields: [{ label: "Status", value: "Nenhum registro encontrado", warn: true }] }],
-      sources: ["BreachDB (Neon)"],
+      sources: [" (Neon)"],
     };
   }
 
@@ -1292,7 +1659,7 @@ async function buscaInmail(provider: string): Promise<OsintResult> {
   }
 
   sections.push({
-    title: `BreachDB — Emails com provedor "${q}"`,
+    title: ` — Emails com provedor "${q}"`,
     fields: [
       { label: "Total de registros", value: String(rows.length), warn: true },
       { label: "Emails únicos", value: String(unique.size) },
@@ -1306,7 +1673,7 @@ async function buscaInmail(provider: string): Promise<OsintResult> {
       return `#${i + 1}  ${maskedEmail}:${maskedPass}`;
     }),
   });
-  sources.push("BreachDB (Neon)");
+  sources.push(" (Neon)");
 
   return {
     ok: true, tool: "inmail", query: q,
@@ -1321,7 +1688,7 @@ async function buscaIpCredentials(ip: string): Promise<OsintResult> {
 
   const { rows: dbRows, errors } = await buscaTelefone(ip);
   if (errors.length > 0) {
-    sections.push({ title: "BreachDB — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
+    sections.push({ title: " — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
   }
 
   const geoPromise = fetch(`https://ipinfo.io/${encodeURIComponent(ip)}/json`, {
@@ -1353,7 +1720,7 @@ async function buscaIpCredentials(ip: string): Promise<OsintResult> {
     }
 
     sections.push({
-      title: `BreachDB — Registros com IP "${ip}"`,
+      title: ` — Registros com IP "${ip}"`,
       fields: [
         { label: "Total", value: String(dbRows.length), warn: true },
         { label: "Pares únicos", value: String(unique.size) },
@@ -1367,7 +1734,7 @@ async function buscaIpCredentials(ip: string): Promise<OsintResult> {
         return `#${i + 1}  ${maskedEmail}:${maskedPass}`;
       }),
     });
-    sources.push("BreachDB (Neon)");
+    sources.push(" (Neon)");
   }
 
   if (dbRows.length === 0 && !geo) {
@@ -1381,7 +1748,7 @@ async function buscaIpCredentials(ip: string): Promise<OsintResult> {
 
   return {
     ok: true, tool: "ip_credentials", query: ip,
-    summary: `${dbRows.length} registros no BreachDB${geo ? ` · ${geo.city || "?"}, ${geo.country || "?"}` : ""}`,
+    summary: `${dbRows.length} registros no ${geo ? ` · ${geo.city || "?"}, ${geo.country || "?"}` : ""}`,
     sections, sources,
   };
 }
@@ -1393,7 +1760,7 @@ async function buscaSubdomainDb(domain: string): Promise<OsintResult> {
 
   const { rows, errors } = await buscaEmail(clean);
   if (errors.length > 0) {
-    sections.push({ title: "BreachDB — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
+    sections.push({ title: " — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
   }
 
   if (rows.length === 0) {
@@ -1401,7 +1768,7 @@ async function buscaSubdomainDb(domain: string): Promise<OsintResult> {
       ok: true, tool: "subdomains_db", query: clean,
       summary: `Nenhum subdomínio para "${clean}"`,
       sections: [{ title: "Resultado", fields: [{ label: "Status", value: "Nenhum registro encontrado", warn: true }] }],
-      sources: ["BreachDB (Neon)"],
+      sources: [" (Neon)"],
     };
   }
 
@@ -1435,7 +1802,7 @@ async function buscaSubdomainDb(domain: string): Promise<OsintResult> {
     title: `Subdomínios de "${clean}" (${subs.length})`,
     list: subs.map(([host, data]) => `${host} (${data.count} registros)`),
   });
-  sources.push("BreachDB (Neon)");
+  sources.push(" (Neon)");
 
   return {
     ok: true, tool: "subdomains_db", query: clean,
@@ -1451,7 +1818,7 @@ async function buscaDomainStats(domain: string): Promise<OsintResult> {
 
   const { rows, errors } = await buscaEmail(clean);
   if (errors.length > 0) {
-    sections.push({ title: "BreachDB — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
+    sections.push({ title: " — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
   }
 
   if (rows.length === 0) {
@@ -1459,7 +1826,7 @@ async function buscaDomainStats(domain: string): Promise<OsintResult> {
       ok: true, tool: "domain_stats", query: clean,
       summary: `Nenhum resultado para "${clean}"`,
       sections: [{ title: "Resultado", fields: [{ label: "Status", value: "Nenhum registro encontrado", warn: true }] }],
-      sources: ["BreachDB (Neon)"],
+      sources: [" (Neon)"],
     };
   }
 
@@ -1495,7 +1862,7 @@ async function buscaDomainStats(domain: string): Promise<OsintResult> {
     });
   }
 
-  sources.push("BreachDB (Neon)");
+  sources.push(" (Neon)");
 
   return {
     ok: true, tool: "domain_stats", query: clean,
@@ -1510,7 +1877,7 @@ async function toolWhoisPhone(phone: string): Promise<OsintResult> {
 
   const { rows, errors } = await buscaTelefone(phone);
   if (errors.length > 0) {
-    sections.push({ title: "BreachDB — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
+    sections.push({ title: " — Erros", fields: errors.map(e => ({ label: "Erro", value: e, warn: true })) });
   }
 
   if (rows.length === 0) {
@@ -1562,7 +1929,7 @@ async function toolWhoisPhone(phone: string): Promise<OsintResult> {
     });
   }
 
-  sources.push("BreachDB (Neon)");
+  sources.push(" (Neon)");
 
   return {
     ok: true, tool: "whois_phone", query: phone,
@@ -1576,14 +1943,15 @@ export const Route = createFileRoute("/api/osint")({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        let body: { tool?: string; query?: string };
+        let body: { tool?: string; query?: string; fast?: boolean };
         try {
-          body = await request.json() as { tool?: string; query?: string };
+          body = await request.json() as { tool?: string; query?: string; fast?: boolean };
         } catch {
           return json({ ok: false, tool: "", query: "", error: "JSON inválido", sections: [], sources: [] }, 400);
         }
         const tool = String(body.tool || "").toLowerCase();
         const query = String(body.query || "").trim();
+        const fast = body.fast === true;
         if (!tool || !query) {
           return json({ ok: false, tool, query, error: "Parâmetros 'tool' e 'query' são obrigatórios.", sections: [], sources: [] }, 400);
         }
@@ -1594,19 +1962,13 @@ export const Route = createFileRoute("/api/osint")({
         if (!token) {
           return json({ ok: false, tool, query, error: "Faça login para usar as ferramentas.", sections: [], sources: [] }, 401);
         }
-        const sbUrl = process.env.SUPABASE_URL!;
-        const sbKey = process.env.SUPABASE_PUBLISHABLE_KEY!;
-        const sb = createClient(sbUrl, sbKey, {
-          global: { headers: { Authorization: `Bearer ${token}` } },
-          auth: { storage: undefined, persistSession: false, autoRefreshToken: false },
-        });
 
         try {
           let r: OsintResult;
           switch (tool) {
-            case "email": r = await toolEmail(query); break;
+            case "email": r = await toolEmail(query, fast); break;
             case "password": r = await toolPassword(query); break;
-            case "breach": r = await toolEmail(query); r.tool = "breach"; break;
+            case "breach": r = await toolEmail(query, fast); r.tool = "breach"; break;
             case "ip": r = await toolIp(query); break;
             case "domain": r = await toolDomain(query); break;
             case "cpf": case "cnpj": r = await toolCpfCnpj(query); break;
@@ -1628,9 +1990,7 @@ export const Route = createFileRoute("/api/osint")({
             default:
               return json({ ok: false, tool, query, error: "Ferramenta desconhecida.", sections: [], sources: [] }, 400);
           }
-          // Plano/quota desativado temporariamente — uso liberado para todos os usuários autenticados.
           void countResults(r);
-          void sb;
           return json(r);
         } catch (err) {
           return json({

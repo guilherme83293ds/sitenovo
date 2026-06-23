@@ -1,3 +1,4 @@
+// Server entry — build timestamp: 2026-06-23
 import "./lib/error-capture";
 
 import { consumeLastCapturedError } from "./lib/error-capture";

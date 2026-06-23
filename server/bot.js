@@ -2502,21 +2502,13 @@ export function setupBot(app, pool, writePool, publicPool) {
       // ── /ferramentas — Mostrar ferramentas disponíveis ──
       if (command === '/ferramentas') {
         return bot.sendMessage(chatId,
-          `🛠️ *FERRAMENTAS DISPONÍVEIS*\n\n` +
-          `📊 *CONSULTAS:*\n` +
-          `• Whois - Informações de domínios\n` +
-          `• GeoIP - Geolocalização\n\n` +
-          `🔍 *BUSCAS:*\n` +
-          `• URL, Email, Usuário\n` +
-          `• Senha, IP, Subdomínios\n` +
-          `• FTP, MySQL\n\n` +
-          `🔑 *STATUS:* ${userAccess.status === 'premium' ? '✅ PREMIUM' : '🆓 GRÁTIS'}`,
+          `🛠️ *FERRAMENTAS*\n\nSelecione uma opção:`,
           opts({
             parse_mode: 'Markdown',
             reply_markup: {
               inline_keyboard: [
-                [{ text: '🚀 IR PARA BUSCAS', callback_data: 'search_menu', style: 'primary' }],
-                [{ text: '🏠 VOLTAR AO MENU', callback_data: 'cmd_menu', style: 'primary' }]
+                [{ text: '🔍 WHOIS', callback_data: 'srch_whois', style: 'primary' }, { text: '📍 GEOIP', callback_data: 'srch_geoip', style: 'primary' }],
+                [{ text: '🏠 VOLTAR AO MENU', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
               ]
             }
           })
@@ -3497,26 +3489,17 @@ export function setupBot(app, pool, writePool, publicPool) {
     // Botão LOGIN
 
 
-    // Botão FERRAMENTAS (removido - agora é um módulo direto)
-
-    // ── FERRAMENTAS → BUSCAS ──
+// Botão FERRAMENTAS — Menu com apenas WHOIS e GEOIP
     if (data === 'tool_buscas') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       return bot.sendMessage(chatId,
-        `🔍 �𝗼́𝗗𝘂𝗟𝗢𝗦 𝗗𝗘 𝗕𝘂𝘀𝗰𝗮\n\nSelecione o módulo de busca:`,
+        `🛠️ *FERRAMENTAS*\n\nSelecione uma opção:`,
         opts({
           parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '🔗 URLS', callback_data: 'mod_urls', style: 'primary' }],
-              [{ text: '✉️ EMAILS', callback_data: 'mod_emails', style: 'primary' }],
-              [{ text: '👤 USUÁRIOS', callback_data: 'mod_usuarios', style: 'primary' }],
-              [{ text: '📞 TELEFONE', callback_data: 'mod_telefone', style: 'primary' }],
-                                          [{ text: '🚀 SUBDOMÍNIOS', callback_data: 'srch_subdominios', style: 'primary' }],
-              [{ text: '🔌 PROTOCOLOS', callback_data: 'mod_protocolos', style: 'primary' }],
               [{ text: '🔍 WHOIS', callback_data: 'srch_whois', style: 'primary' }, { text: '📍 GEOIP', callback_data: 'srch_geoip', style: 'primary' }],
-              [{ text: '📍 IP', callback_data: 'srch_ip', style: 'primary' }],
               [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }

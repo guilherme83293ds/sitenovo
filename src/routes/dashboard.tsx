@@ -24,32 +24,8 @@ export const Route = createFileRoute("/dashboard")({
 });
 
 const TOOLS: { id: string; icon: typeof Mail; label: string; desc: string; sample: string; soon?: boolean; tag?: string }[] = [
-  { id: "email", icon: Mail, label: "E-mail", desc: "Encontre perfis, contas e vazamentos associados a um endereço.", sample: "analista@exemplo.com" },
-  { id: "phone", icon: Phone, label: "Telefone", desc: "Identifique titular, operadora e contas vinculadas ao número.", sample: "+55 11 98765-4321" },
-  { id: "username", icon: User, label: "Usuário", desc: "Rastreie presença em 500+ plataformas com um único identificador.", sample: "@cyber_analista" },
-  { id: "email-rep", icon: ShieldAlert, label: "Reputação de Email", desc: "Verifica se o email está em listas negras ou tem reputação baixa.", sample: "suspicious@example.com" },
-  { id: "phone-validate", icon: Phone, label: "Validação de Telefone", desc: "Confirma se o número é válido e obtém detalhes do operador.", sample: "+55 21 98765-4321" },
-  { id: "cpf", icon: CreditCard, label: "CPF / CNPJ", desc: "Dados cadastrais, quadro societário e registros públicos (BR).", sample: "123.456.789-00", tag: "Brasil" },
-  { id: "domain", icon: Globe2, label: "Domínio", desc: "Whois, DNS, tecnologias utilizadas e subdomínios expostos.", sample: "exemplo.com.br" },
-  { id: "ip", icon: Network, label: "IP", desc: "Geolocalização, ISP, reputação e portas abertas do endereço.", sample: "200.150.10.42" },
-  { id: "blockchain", icon: Wallet, label: "Blockchain", desc: "Rastreie carteiras de criptomoedas e transações.", sample: "0x742d35Cc6634C0532925a3b8" },
-  { id: "link", icon: Link2, label: "Link / URL", desc: "Análise de links e URLs. Identifique conexões e relações online.", sample: "https://loja-suspeita.shop/promo" },
-  { id: "url_logins", icon: Key, label: "Logins URL", desc: "Extraia logins (email:senha) do conteúdo de uma URL.", sample: "https://pastebin.com/raw/abc123" },
-  { id: "social", icon: Share2, label: "Redes sociais", desc: "Cross-reference entre plataformas e análise de conexões.", sample: "@perfil_alvo" },
-  { id: "breach", icon: ShieldAlert, label: "Vazamentos", desc: "Credenciais expostas em vazamentos e dumps conhecidos.", sample: "alvo@exemplo.com" },
-  { id: "password", icon: Lock, label: "Senha", desc: "Descubra em quais vazamentos uma senha apareceu.", sample: "" },
-  { id: "url_domain", icon: Globe, label: "Busca Domínio", desc: "Busque credenciais por domínio no banco de dados de vazamentos.", sample: "site.com.br" },
-  { id: "inurl", icon: Globe2, label: "InURL", desc: "Busque URLs contendo um padrão específico (ex: wp-admin, login).", sample: "wp-admin" },
-  { id: "inmail", icon: Mail, label: "InMail", desc: "Busque emails por provedor (ex: @gmail.com, @gov.br).", sample: "@gmail.com" },
-  { id: "ip_credentials", icon: Hash, label: "IP Credentials", desc: "Busque credenciais associadas a um endereço IP.", sample: "187.45.123.45" },
-  { id: "subdomains_db", icon: Globe2, label: "Subdomínios DB", desc: "Encontre subdomínios reais no banco de dados de vazamentos.", sample: "empresa.com.br" },
-  { id: "domain_stats", icon: Database, label: "Stats Domínio", desc: "Estatísticas detalhadas de um domínio no banco de vazamentos.", sample: "empresa.com.br" },
-  { id: "whois_phone", icon: Fingerprint, label: "Whois Telefone", desc: "Investigação completa via telefone: emails, sites e senhas associados.", sample: "+55 11 98765-4321" },
-  { id: "meta", icon: FileText, label: "Metadados", desc: "Extraia metadados de arquivos (EXIF, autor, GPS).", sample: "documento.pdf" },
-  { id: "bucket", icon: Cloud, label: "Buckets", desc: "Armazenamento exposto em S3, Google Cloud Storage e Azure Blob.", sample: "empresa-backups", soon: true },
-  { id: "ai", icon: Sparkles, label: "Enriquecimento IA", desc: "Conexões automáticas entre entidades detectadas por IA.", sample: "", soon: true },
-  { id: "timeline", icon: Clock, label: "Linha do tempo", desc: "Evolução temporal de pegadas digitais e padrões de comportamento.", sample: "", soon: true },
-  { id: "geo", icon: MapPin, label: "Geolocalização", desc: "Localização via metadados, EXIF e cruzamento de fontes abertas.", sample: "", soon: true },
+  { id: "geo", icon: MapPin, label: "GeoIP", desc: "Geolocalização de endereço IP, ISP e informações de localização.", sample: "200.150.10.42" },
+  { id: "domain", icon: Globe2, label: "WHOIS", desc: "Informações WHOIS, DNS e detalhes de domínio.", sample: "exemplo.com.br" },
 ];
 
 const STATS = [
@@ -93,7 +69,7 @@ function Sparkline({ data, accent = false }: { data: number[]; accent?: boolean 
 }
 
 function Dashboard() {
-  const [activeTool, setActiveTool] = useState("email");
+  const [activeTool, setActiveTool] = useState("geo");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const tool = TOOLS.find(t => t.id === activeTool)!;
   const [query, setQuery] = useState(tool.sample);

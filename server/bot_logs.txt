@@ -1,0 +1,39 @@
+[2026-06-23T02:15:12.473Z] @controletotal (8694124825): /db
+[2026-06-23T02:15:12.475Z] @controletotal (8694124825): /inurl
+[2026-06-23T02:15:12.476Z] @Gabriel_soV (8013168374): /url https://bibliotecadigitalsenac.com.br/
+[2026-06-23T02:15:12.476Z] @controletotal (8694124825): /db
+[2026-06-23T02:15:12.477Z] @Gabriel_soV (8013168374): /url https://bibliotecadigitalsenac.com.br/#/login
+[2026-06-23T02:15:12.477Z] @controletotal (8694124825): /db
+[2026-06-23T02:15:12.477Z] @controletotal (8694124825): /url
+[2026-06-23T02:15:12.477Z] @controletotal (8694124825): /db
+[2026-06-23T02:15:12.478Z] @controletotal (8694124825): /db
+[2026-06-23T02:15:12.479Z] @gardenlehman (8400861917): /start
+[2026-06-23T02:15:12.513Z] @LeaveDarkPy (8641242852): /db motelnuparaiso.com.br
+[2026-06-23T02:15:12.516Z] Nike Online (8957267312): /url https://sp156.prefeitura.sp.gov.br/
+[2026-06-23T02:15:12.516Z] Nike Online (8957267312): /user
+[2026-06-23T02:15:12.516Z] Nike Online (8957267312): /url https://sp156.prefeitura.sp.gov.br/portal
+[2026-06-23T02:15:12.517Z] @premiumconta (6757463311): /start
+[2026-06-23T02:15:12.516Z] @premiumconta (6757463311): /url
+[2026-06-23T02:15:12.516Z] @premiumconta (6757463311): /start
+[2026-06-23T02:15:12.519Z] Nike Online (8957267312): /url
+[2026-06-23T02:15:12.518Z] @tech74678 (1644499955): /start
+[2026-06-23T02:15:12.520Z] @controletotal (8694124825): /db
+[2026-06-23T02:15:12.521Z] @controletotal (8694124825): /start
+[2026-06-23T02:15:12.522Z] @controletotal (8694124825): /start
+[2026-06-23T02:15:12.520Z] @controletotal (8694124825): /db
+[2026-06-23T02:15:12.523Z] @controletotal (8694124825): /start
+[2026-06-23T02:15:12.524Z] @controletotal (8694124825): /start
+[2026-06-23T02:15:12.524Z] @controletotal (8694124825): /db
+[2026-06-23T02:15:12.525Z] @controletotal (8694124825): /start
+[2026-06-23T02:15:12.526Z] @controletotal (8694124825): /start
+[2026-06-23T17:11:18.059Z] @controletotal (8694124825): /url
+[2026-06-23T18:33:54.778Z] @controletotal (8694124825): /url
+[2026-06-23T18:33:54.787Z] @controletotal (8694124825): /url
+[2026-06-23T18:33:54.787Z] @sinsssssss7 (-1003518534631): /LOGIN@ASSEMBLYLOGS_BOT
+[2026-06-23T18:33:54.788Z] @sinsssssss7 (-1003518534631): /FERRAMENTAS@ASSEMBLYLOGS_BOT
+[2026-06-23T18:33:54.791Z] @controletotal (-1003518534631): /db
+[2026-06-23T18:33:54.792Z] Nike Online (8957267312): /url
+[2026-06-23T18:33:54.792Z] Nike Online (8957267312): /url https://saeb.inep.gov.br/
+[2026-06-23T18:33:54.793Z] Nike Online (8957267312): /url Https://misticpay.com
+[2026-06-23T18:34:52.688Z] Nike Online (8957267312): /url Https://misticpay.com
+[2026-06-23T18:35:17.868Z] Nike Online (8957267312): /url https://saeb.inep.gov.br/
