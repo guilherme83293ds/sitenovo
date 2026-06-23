@@ -2471,15 +2471,11 @@ export function setupBot(app, pool, writePool, publicPool) {
           `🔎 /CONSULTARDADOS - Consultas avançadas\n\n` +
           (inGroup ? '' : `💎 *Não tem key?* ${OWNER_PROFILE}`);
 
-        const buyButton = (!inGroup && userAccess.status !== 'premium') ? [[{ text: '💎 COMPRAR PREMIUM', url: OWNER_PROFILE }]] : [];
-        const supportButton = inGroup ? [] : [[{ text: '💬 SUPORTE', url: OWNER_PROFILE }]];
         const mainMenuButtons = [
-          [{ text: '️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }],
-          [{ text: '🔎 CONSULTAR DADOS', callback_data: 'consultar_dados_menu', style: 'primary' }],
+          [{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }],
           [{ text: '🚀 PUXAR LOGINS', callback_data: 'puxar_logins', style: 'primary' }],
-          ...buyButton,
-          ...supportButton,
-          [{ text: '🔑 ATIVAR KEY', callback_data: 'addkey', style: 'primary' }]
+          [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
+          [{ text: '📈 TOTAL', callback_data: 'cmd_total', style: 'primary' }]
         ];
         const markup = {
           reply_markup: {
@@ -3905,6 +3901,37 @@ export function setupBot(app, pool, writePool, publicPool) {
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       const result = await activateKey(chatId, keyToActivate);
       await bot.sendMessage(chatId, result.message, opts({ parse_mode: 'Markdown' }));
+      return;
+    }
+
+    // Botão TOTAL — Mostrar total de registros
+    if (data === 'cmd_total') {
+      if (chatId !== ADMIN_ID) {
+        bot.answerCallbackQuery(callbackQuery.id, { text: '❌ Comando restrito' }).catch(() => {});
+        return;
+      }
+      bot.answerCallbackQuery(callbackQuery.id, { text: '📊 Carregando...' }).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      try {
+        const results = await Promise.allSettled(
+          pool.pools.map(p => p.query(`SELECT reltuples::bigint AS count, current_setting('server_version') AS ver FROM pg_class WHERE relname = 'credentials'`))
+        );
+        let total = 0;
+        let dbLines = '';
+        results.forEach((r, i) => {
+          const count = r.status === 'fulfilled' ? Number(r.value.rows[0]?.count || 0) : 0;
+          total += count;
+          dbLines += `• *DB${i+1}:* \`${count.toLocaleString('pt-BR')}\` registros\n`;
+        });
+        const formatted = total.toLocaleString('pt-BR');
+        await bot.sendMessage(
+          chatId,
+          `📊 *ESTADO DA BASE*\n\n${dbLines}• *Total:* \`${formatted}\`\n• *Status:* \`ONLINE\` 🟢`,
+          opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }]] } })
+        );
+      } catch (e) {
+        bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
+      }
       return;
     }
 
