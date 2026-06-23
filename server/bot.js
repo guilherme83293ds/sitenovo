@@ -2492,6 +2492,7 @@ export function setupBot(app, pool, writePool, publicPool) {
           [{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }],
           [{ text: '🚀 PUXAR LOGINS', callback_data: 'puxar_logins', style: 'primary' }],
           [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
+          [{ text: '📜 COMANDOS', callback_data: 'list_commands', style: 'primary' }],
           [{ text: '➕ ADICIONAR AO GRUPO', url: `https://t.me/${TOKEN.split(':')[0]}?startgroup=true`, style: 'primary' }]
         ];
         const markup = {
@@ -3535,6 +3536,32 @@ export function setupBot(app, pool, writePool, publicPool) {
           reply_markup: {
             inline_keyboard: [
               [{ text: '🔍 WHOIS', callback_data: 'srch_whois', style: 'primary' }, { text: '📍 GEOIP', callback_data: 'srch_geoip', style: 'primary' }],
+              [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+            ]
+          }
+        })
+      );
+    }
+
+    // Botão COMANDOS — Lista de comandos disponíveis
+    if (data === 'list_commands') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      return bot.sendMessage(chatId,
+        `📜 *COMANDOS DISPONÍVEIS*\n\n` +
+        `🔓 /LOGIN - Acessar com credenciais\n` +
+        `🛠️ /FERRAMENTAS - Ferramentas avançadas (WHOIS, GEOIP)\n` +
+        `🔍 /BUSCAS - Módulos de busca (URLs, Emails, Usuários, Telefones, Dominios, Protocolos)\n` +
+        `🚀 /PUXARLOGINS - Extrair dados de login\n` +
+        `📊 /PUXARDADOS - Dados avançados e consultas\n` +
+        `💳 /PLANOS - Ver planos disponíveis\n` +
+        `👤 /CONTA - Gerenciar sua conta\n` +
+        `❓ /AJUDA - Exibir esta mensagem\n\n` +
+        `💡 *Dica:* Use os botões abaixo para navegar mais rápido!`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
               [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
