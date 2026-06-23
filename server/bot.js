@@ -25,6 +25,7 @@ const TOKEN = process.env.TELEGRAM_TOKEN;
 const BANNER_JPG = path.join(__dirname, 'assets', 'banner.jpg');
 const BANNER_PNG = path.join(__dirname, 'assets', 'banner.png');
 const BANNER_VIDEO = path.join(__dirname, 'assets', 'banner.mp4');
+const BANNER_PATH = BANNER_JPG; // Para compatibilidade com código existente
 
 // Usa tmpdir do sistema (funciona no Windows e Linux)
 const TMP_DIR = os.tmpdir();
