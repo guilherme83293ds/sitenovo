@@ -3545,7 +3545,7 @@ export function setupBot(app, pool, writePool, publicPool) {
               [{ text: '📞 TELEFONE', callback_data: 'mod_telefone', style: 'primary' }],
                                           [{ text: '🔌 PROTOCOLOS', callback_data: 'mod_protocolos', style: 'primary' }],
               [{ text: ' CONSULTAS AVANÇADAS', callback_data: 'puxar_dados', style: 'primary' }],
-              [{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+              [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
         })
@@ -3564,7 +3564,7 @@ export function setupBot(app, pool, writePool, publicPool) {
             inline_keyboard: [
               [{ text: '🔗 URL', callback_data: 'srch_url', style: 'primary' }],
               [{ text: '🔗 TERMO NA URL', callback_data: 'srch_inurl', style: 'primary' }],
-              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
         })
@@ -3583,7 +3583,7 @@ export function setupBot(app, pool, writePool, publicPool) {
             inline_keyboard: [
               [{ text: '✉️ E-MAIL', callback_data: 'srch_email', style: 'primary' }],
               [{ text: '📨 PROVEDOR', callback_data: 'srch_inmail', style: 'primary' }],
-              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
         })
@@ -3602,7 +3602,7 @@ export function setupBot(app, pool, writePool, publicPool) {
             inline_keyboard: [
               [{ text: '👤 USUÁRIO', callback_data: 'srch_user', style: 'primary' }],
               [{ text: '🔒 SENHA', callback_data: 'srch_senha', style: 'primary' }],
-              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
         })
@@ -3621,7 +3621,7 @@ export function setupBot(app, pool, writePool, publicPool) {
             inline_keyboard: [
               [{ text: '📞 TELEFONE', callback_data: 'srch_telefone', style: 'primary' }],
               [{ text: '📍 IP', callback_data: 'srch_ip', style: 'primary' }],
-              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
         })
@@ -3640,7 +3640,7 @@ export function setupBot(app, pool, writePool, publicPool) {
             inline_keyboard: [
               [{ text: '📋 CPF', callback_data: 'srch_cpf', style: 'primary' }],
               [{ text: '🏢 CNPJ', callback_data: 'srch_cnpj', style: 'primary' }],
-              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
         })
@@ -3660,7 +3660,7 @@ export function setupBot(app, pool, writePool, publicPool) {
               [{ text: '🌍 DOMÍNIO', callback_data: 'srch_domain', style: 'primary' }],
               [{ text: '📋 COPIAR SITE', callback_data: 'srch_copyurl', style: 'primary' }],
               [{ text: '🚀 SUBDOMÍNIOS', callback_data: 'srch_subdominios', style: 'primary' }],
-              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
         })
@@ -3680,7 +3680,7 @@ export function setupBot(app, pool, writePool, publicPool) {
               [{ text: '🔌 FTP', callback_data: 'srch_ftp', style: 'primary' }, { text: '📡 SMTP', callback_data: 'srch_smtp', style: 'primary' }],
               [{ text: '🗄 MySQL', callback_data: 'srch_mysql', style: 'primary' }, { text: '🔌 Port8080', callback_data: 'srch_port8080', style: 'primary' }],
               [{ text: '🔌 Port8443', callback_data: 'srch_port8443', style: 'primary' }],
-              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+              [{ text: '◀️ VOLTAR', callback_data: 'search_menu', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
         })
