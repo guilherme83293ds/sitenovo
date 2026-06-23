@@ -236,16 +236,7 @@ app.use((req, res, next) => {
   next();
 });
 
-
-
-// Upload routes DEVEM ser registradas ANTES do express.json()
-// para que o body stream não seja consumido pelo JSON parser
-app.get('/upload', (req, res) => {
-  res.sendFile(path.join(path.dirname(fileURLToPath(import.meta.url)), 'upload.html'));
-});
-
-// O express.json() vem DEPOIS das rotas de upload (registradas no bloco uploadPool abaixo)
-// Usamos uma flag para garantir que express.json() não processa upload-stream
+// O express.json() para todas as rotas API
 const skipJsonParse = (req, res, next) => {
   if (req.url === '/api/upload-stream') return next();
   express.json({ limit: '50mb' })(req, res, next);
@@ -264,14 +255,6 @@ app.use((req, res, next) => {
   });
   next();
 });
-
-// Em produção, serve o frontend buildado
-if (process.env.NODE_ENV === 'production') {
-  const __dirname = path.dirname(fileURLToPath(import.meta.url));
-  const distPath = path.join(__dirname, '..', 'dist');
-  app.use(express.static(distPath, { maxAge: '1y', immutable: true }));
-  // O catch-all de SPA será adicionado no final do arquivo
-}
 
 class MultiClient {
   constructor(clients) {

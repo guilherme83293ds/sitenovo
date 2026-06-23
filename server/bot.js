@@ -35,6 +35,18 @@ let bot = null;
 let _writePool = null;
 let _publicPool = null;
 
+// ═══ CACHE EM MEMÓRIA PARA DADOS FREQUENTES ═══
+const userAccessCache = new Map(); // { userId: { status, data, cachedAt } }
+const CACHE_TTL = 60000; // 60 segundos
+function getCachedAccess(userId) {
+  const cached = userAccessCache.get(userId);
+  if (cached && Date.now() - cached.cachedAt < CACHE_TTL) return cached.data;
+  return null;
+}
+function setCachedAccess(userId, data) {
+  userAccessCache.set(userId, { data, cachedAt: Date.now() });
+}
+
 
 // ══════════════════════════════════════════════════
 // SISTEMA DE LICENÇA / TRIAL — CONFIGURAÇÃO
@@ -112,6 +124,11 @@ async function checkUserAccess(telegramId, isGroupOwnerFlag = false) {
     if (isGroupOwnerFlag) {
       return { status: 'group', searchesLeft: Infinity };
     }
+
+    // CACHE: verifica se tem na memória (válido por 60s)
+    const cached = getCachedAccess(telegramId);
+    if (cached) return cached;
+
     // 1. Verifica se tem license key ativa (não expirada)
     const keyRes = await _writePool.query(
       `SELECT id, expires_at FROM license_keys WHERE telegram_id = $1 AND activated_at IS NOT NULL LIMIT 1`,
@@ -123,7 +140,9 @@ async function checkUserAccess(telegramId, isGroupOwnerFlag = false) {
       if (expiresAt && new Date(expiresAt) < new Date()) {
         // Key expirada — cai no trial abaixo
       } else {
-        return { status: 'premium', searchesLeft: Infinity, expiresAt };
+        const result = { status: 'premium', searchesLeft: Infinity, expiresAt };
+        setCachedAccess(telegramId, result);
+        return result;
       }
     }
 
@@ -133,7 +152,9 @@ async function checkUserAccess(telegramId, isGroupOwnerFlag = false) {
       [telegramId]
     );
     if (trialRes.rows.length === 0) {
-      return { status: 'new', searchesLeft: TRIAL_MAX_SEARCHES };
+      const result = { status: 'new', searchesLeft: TRIAL_MAX_SEARCHES };
+      setCachedAccess(telegramId, result);
+      return result;
     }
 
     let searches = trialRes.rows[0].searches;
@@ -159,10 +180,14 @@ async function checkUserAccess(telegramId, isGroupOwnerFlag = false) {
       const hours = Math.floor(minsLeft / 60);
       const mins = minsLeft % 60;
       const resetText = hours > 0 ? `${hours}h ${mins}min` : `${mins}min`;
-      return { status: 'expired', searchesLeft: 0, resetIn: resetText };
+      const result = { status: 'expired', searchesLeft: 0, resetIn: resetText };
+      setCachedAccess(telegramId, result);
+      return result;
     }
 
-    return { status: 'trial', searchesLeft: TRIAL_MAX_SEARCHES - searches };
+    const result = { status: 'trial', searchesLeft: TRIAL_MAX_SEARCHES - searches };
+    setCachedAccess(telegramId, result);
+    return result;
   } catch (err) {
     console.error('[ACCESS CHECK ERROR]', err.message);
     // Em caso de erro no banco, bloqueia para evitar loop infinito
@@ -636,7 +661,6 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
         `SELECT * FROM credentials WHERE url LIKE $1 OR url LIKE $2 OR url LIKE $3 OR url LIKE $4 OR url LIKE $5 LIMIT $6`,
         [`http://${domain}%`, `https://${domain}%`, `http://www.${domain}%`, `https://www.${domain}%`, `${domain}%`, MAX_ROWS]
       );
-      console.log(`⏱️ [${field}] query ${Date.now()-t0}ms rows=${res.rows.length}`);
       rows = res.rows;
 
       // Deduplica e limita (necessário pq multi-db pode retornar dupes)
@@ -726,11 +750,9 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
           `SELECT * FROM credentials WHERE ${field} ILIKE $1 LIMIT $2`, [`%${q}%`, MAX_ROWS]
         );
       }
-      console.log(`⏱️ [${field}] query ${Date.now()-t0}ms rows=${res.rows.length}`);
       rows = res.rows;
     }
 
-    if (field !== 'url') console.log(`⏱️ [${field}] query ${Date.now()-t0}ms rows=${rows.length}`);
     if (loadingMsg) bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
 
     if (rows.length === 0) {
@@ -957,8 +979,6 @@ async function sendUserResults(chatId, query, pool, threadId) {
         [`%${q}%`, MAX_ROWS]
       );
     }
-
-    console.log(`⏱️ [user] ${Date.now()-t0}ms rows=${res.rows.length}`);
     if (loadingMsg) bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
 
     if (res.rows.length === 0) {
@@ -1694,8 +1714,8 @@ export function setupBot(app, pool, writePool, publicPool) {
   _writePool.query(`ALTER TABLE bot_trials ADD COLUMN IF NOT EXISTS last_reset TIMESTAMPTZ DEFAULT NOW()`).catch(() => {});
 
   // Cria o bot AQUI (não no nível do módulo) para evitar dupla polling
-  bot = new TelegramBot(TOKEN, { polling: { interval: 1000, autoStart: true, params: { timeout: 10 } } });
-  console.log('🤖 [BOT] Telegram Bot iniciado com polling.');
+  bot = new TelegramBot(TOKEN, { polling: { interval: 300, autoStart: true, params: { timeout: 5 } } });
+  console.log('🤖 [BOT] Telegram Bot OTIMIZADO (polling: 300ms, timeout: 5s).');
 
   // Remove botão "ABRIR APP" → substitui por "MENU" com comandos
   const https = require('https');
@@ -1707,8 +1727,8 @@ export function setupBot(app, pool, writePool, publicPool) {
     let body = '';
     res.on('data', (d) => body += d);
     res.on('end', () => {
-      try { console.log('✅ [BOT] Menu button configurado:', JSON.parse(body).description || 'OK'); }
-      catch { console.log('✅ [BOT] Menu button configurado'); }
+      try { /* Menu button configurado silenciosamente */ JSON.parse(body); }
+      catch { }
     });
   });
   menuBtnReq.on('error', () => {});
@@ -2381,11 +2401,12 @@ export function setupBot(app, pool, writePool, publicPool) {
 
       if (!text) return;
 
-      // Log
-      const logLine = `[${new Date().toISOString()}] ${username} (${chatId}): ${text}\n`;
-      console.log(`📩 [BOT] ${logLine.trim()}`);
-      const logsPath = path.join(__dirname, 'bot_logs.txt');
-      fs.appendFile(logsPath, logLine, () => {});
+      // Log otimizado (apenas para comandos)
+      if (isCommand) {
+        const logLine = `[${new Date().toISOString()}] ${username} (${chatId}): ${text}\n`;
+        const logsPath = path.join(__dirname, 'bot_logs.txt');
+        fs.appendFileSync(logsPath, logLine);
+      }
 
       // Parse comando e argumento
       const isCommand = text.startsWith('/');
@@ -3480,7 +3501,7 @@ export function setupBot(app, pool, writePool, publicPool) {
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       // Simula o comando /start novamente
       const mockUpdate = {
-        message: { text: '/start', chat: msg.chat }
+        message: { text: '/start', chat: msg.chat, from: callbackQuery.from }
       };
       bot.emit('text', mockUpdate);
       return;
@@ -3799,82 +3820,24 @@ export function setupBot(app, pool, writePool, publicPool) {
       pendingConsulta.delete(chatId);
       bot.answerCallbackQuery(callbackQuery.id, { text: '⏹ Busca cancelada' }).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-        return bot.sendMessage(chatId,
-    `⏹ 𝗕𝘂𝘀𝗰𝗮 𝗖𝗮𝗻𝗰𝗲𝗹𝗮𝗱𝗮\n\nUse /start para voltar ao menu.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔍 NOVA BUSCA', callback_data: 'search_menu', style: 'primary' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'back_start', style: 'primary' }]] } }));
+      // Volta ao menu principal
+      const mockUpdate = {
+        message: { text: '/start', chat: msg.chat, from: callbackQuery.from }
+      };
+      bot.emit('text', mockUpdate);
+      return;
     }
 
     // Botão VOLTAR ao start
     if (data === 'back_start') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      // Reenvia o menu inicial sem consultar o banco (uso rápido)
-      let userAccess;
-      if (groupChats.has(chatId)) {
-        userAccess = { status: 'group' };
-      } else {
-        userAccess = { status: 'trial', searchesLeft: TRIAL_MAX_SEARCHES };
-      }
-      let statusLine, previewText;
-      if (userAccess.status === 'premium') {
-        const expiresText = userAccess.expiresAt
-          ? `— até ${new Date(userAccess.expiresAt).toLocaleDateString('pt-BR')}`
-          : '♾️ Vitalícia';
-        statusLine = `✅ *ACESSO PREMIUM* ${expiresText} 🎉`;
-        previewText = `Você já possui acesso completo ao banco de dados.\n` +
-          `Use os comandos abaixo para realizar suas buscas.`;
-      } else if (userAccess.status === 'group') {
-        statusLine = `👥 *MODO GRUPO* — Ilimitado (100 resultados/busca)`;
-        previewText = `Este chat é um *grupo* com bot ativo.\n` +
-          `✅ Buscas *ILIMITADAS* com até *100 resultados* por busca.`;
-      } else if (userAccess.status === 'expired') {
-        statusLine = `🟢 *BUSCAS ILIMITADAS*`;
-        previewText = `✅ Você tem acesso a *buscas ilimitadas* com até *100 resultados*.\n` +
-          `🔑 Para mais resultados por busca, compre uma key.`;
-      } else {
-        statusLine = `🟢 *BUSCAS ILIMITADAS*`;
-        previewText = `✅ Você tem acesso a *buscas ilimitadas* com até *100 resultados*.\n` +
-          `🔑 Para mais resultados por busca, compre uma key abaixo.`;
-      }
-      const helpText =
-        `💀 𝗔𝗦𝗦𝗘𝗠𝗕𝗟𝗬 𝗟𝗢𝗚𝗦\n\n` +
-          `🟢 *𝗢𝗡𝗟𝗜𝗡𝗘*\n\n` +
-          `${statusLine}\n\n` +
-          `${previewText}\n\n` +
-        `📋 𝗖𝗼𝗺𝗮𝗻𝗱𝗼𝘀:\n` +
-        `• \`/url site.com\`\n` +
-        `• \`/email user@mail.com\`\n` +
-        `• \`/senha 123456\`\n` +
-        `• \`/telefone 11999999999\`\n` +
-        `• \`/key SUA-CHAVE\`\n\n` +
-          `💰 𝗣𝗟𝗔𝗡𝗢𝗦:\n` +
-          `⚡ 𝗦𝗧𝗔𝗥𝗧𝗘𝗥 — R$30 (15 dias, 500 créditos/dia)\n` +
-          `🚀 𝗣𝗥𝗢 — R$60 (30 dias, 2.000 créditos/dia)\n` +
-          `🏢 𝗘𝗡𝗧𝗘𝗥𝗣𝗥𝗜𝗦𝗘 — R$120 (30 dias, 10.000 créditos/dia)\n\n` +
-          `💎 𝗖𝗼𝗺𝗽𝗿𝗮𝗿: ${OWNER_PROFILE}\n` +
-        `📌 𝗖𝗮𝗻𝗰𝗲𝗹𝗮𝗿: /cancelar`;
-      const adminButtons2 = [];
-      const buyButton2 = userAccess.status !== 'premium' ? [[{ text: '💎 COMPRAR PREMIUM', url: OWNER_PROFILE }]] : [];
-      const markupBack = {
-        inline_keyboard: [
-          [{ text: '🔍 NOVA BUSCA', callback_data: 'search_menu', style: 'primary' }],
-          ...buyButton2,
-          [{ text: '💬 SUPORTE', url: OWNER_PROFILE }],
-          [{ text: '🔑 ATIVAR KEY', callback_data: 'addkey', style: 'primary' }],
-          ...adminButtons2
-        ]
+      // Simula o comando /start novamente para voltar ao menu principal
+      const mockUpdate = {
+        message: { text: '/start', chat: msg.chat, from: callbackQuery.from }
       };
-      
-      if (fs.existsSync(BANNER_VIDEO)) {
-        return bot.sendVideo(chatId, BANNER_VIDEO, opts({ caption: helpText, parse_mode: 'Markdown', reply_markup: markupBack })).catch(() => {
-          bot.sendMessage(chatId, helpText, opts({ parse_mode: 'Markdown', reply_markup: markupBack }));
-        });
-      } else if (fs.existsSync(BANNER_PATH)) {
-        return bot.sendPhoto(chatId, BANNER_PATH, opts({ caption: helpText, parse_mode: 'Markdown', reply_markup: markupBack })).catch(() => {
-          bot.sendMessage(chatId, helpText, opts({ parse_mode: 'Markdown', reply_markup: markupBack }));
-        });
-      } else {
-        return bot.sendMessage(chatId, helpText, opts({ parse_mode: 'Markdown', reply_markup: markupBack }));
-      }
+      bot.emit('text', mockUpdate);
+      return;
     }
 
     // Botão SUBDOMÍNIOS
