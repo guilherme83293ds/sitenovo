@@ -3773,7 +3773,7 @@ export function setupBot(app, pool, writePool, publicPool) {
     if (data === 'mon_email') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      userStates[chatId] = { action: 'monitor_email' };
+      monitoringStates.set(chatId, { action: 'monitor_email' });
       return bot.sendMessage(chatId,
         `📧 *MONITORAR EMAIL*\n\n` +
         `Digite o email que deseja monitorar:`,
@@ -3785,7 +3785,7 @@ export function setupBot(app, pool, writePool, publicPool) {
     if (data === 'mon_password') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      userStates[chatId] = { action: 'monitor_password' };
+      monitoringStates.set(chatId, { action: 'monitor_password' });
       return bot.sendMessage(chatId,
         `🔐 *MONITORAR SENHA*\n\n` +
         `Digite a senha que deseja verificar:`,
@@ -3797,7 +3797,7 @@ export function setupBot(app, pool, writePool, publicPool) {
     if (data === 'mon_phone') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      userStates[chatId] = { action: 'monitor_phone' };
+      monitoringStates.set(chatId, { action: 'monitor_phone' });
       return bot.sendMessage(chatId,
         `📞 *MONITORAR TELEFONE*\n\n` +
         `Digite o telefone que deseja monitorar (formato: +55 XX 9XXXX-XXXX):`,
@@ -3809,7 +3809,7 @@ export function setupBot(app, pool, writePool, publicPool) {
     if (data === 'mon_domain') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      userStates[chatId] = { action: 'monitor_domain' };
+      monitoringStates.set(chatId, { action: 'monitor_domain' });
       return bot.sendMessage(chatId,
         `🌐 *MONITORAR DOMÍNIO*\n\n` +
         `Digite o domínio que deseja monitorar (ex: example.com):`,
@@ -3821,7 +3821,7 @@ export function setupBot(app, pool, writePool, publicPool) {
     if (data === 'mon_url') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      userStates[chatId] = { action: 'monitor_url' };
+      monitoringStates.set(chatId, { action: 'monitor_url' });
       return bot.sendMessage(chatId,
         `🔗 *MONITORAR URL*\n\n` +
         `Digite a URL que deseja monitorar (ex: https://example.com):`,
