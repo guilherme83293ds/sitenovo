@@ -2496,6 +2496,7 @@ export function setupBot(app, pool, writePool, publicPool) {
           [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
           [{ text: '📜 COMANDOS', callback_data: 'list_commands', style: 'primary' }],
           [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
+          [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
           [{ text: '➕ ADICIONAR AO GRUPO', url: `https://t.me/${TOKEN.split(':')[0]}?startgroup=true`, style: 'primary' }]
         ];
         const markup = {
@@ -3692,6 +3693,47 @@ export function setupBot(app, pool, writePool, publicPool) {
           parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
+              [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+            ]
+          }
+        })
+      );
+    }
+
+    // Botão PLANOS — Mostrar planos disponíveis
+    if (data === 'show_plans') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      return bot.sendMessage(chatId,
+        `💎 *PLANOS DISPONÍVEIS*\n\n` +
+        `╔════════════════════════════════════╗\n` +
+        `║   🚀 *STARTER* - R$ 20,00          ║\n` +
+        `║   📊 5.000 Resultados por busca    ║\n` +
+        `║   ⏱️ Acesso 30 dias                ║\n` +
+        `║   ✓ Suporte via Telegram           ║\n` +
+        `╚════════════════════════════════════╝\n\n` +
+        `╔════════════════════════════════════╗\n` +
+        `║   ⭐ *PRO* - R$ 50,00              ║\n` +
+        `║   📊 20.000 Resultados por busca   ║\n` +
+        `║   ⏱️ Acesso 30 dias                ║\n` +
+        `║   ✓ Suporte prioritário            ║\n` +
+        `║   ✓ Atualizações exclusivas        ║\n` +
+        `╚════════════════════════════════════╝\n\n` +
+        `╔════════════════════════════════════╗\n` +
+        `║   🔥 *POWER* - R$ 100,00           ║\n` +
+        `║   📊 Resultados ILIMITADOS         ║\n` +
+        `║   ⏱️ Acesso VITALÍCIO              ║\n` +
+        `║   ✓ Suporte PREMIUM via API        ║\n` +
+        `║   ✓ Acesso a todas as ferramentas  ║\n` +
+        `║   ✓ Prioridade máxima             ║\n` +
+        `╚════════════════════════════════════╝`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🛒 COMPRAR STARTER', url: 'https://t.me/controletotal', style: 'primary' }],
+              [{ text: '🛒 COMPRAR PRO', url: 'https://t.me/controletotal', style: 'primary' }],
+              [{ text: '🛒 COMPRAR POWER', url: 'https://t.me/controletotal', style: 'primary' }],
               [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
