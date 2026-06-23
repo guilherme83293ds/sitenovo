@@ -588,6 +588,78 @@ function saveConsultaCache() {
   try { fs.writeFileSync(CONSULTA_CACHE_PATH, JSON.stringify(consultaCache), 'utf8'); } catch (_) {}
 }
 
+// ══════════════════════════════════════════════════════
+// SIPNI DATASUS INTEGRATION
+// ══════════════════════════════════════════════════════
+const SIPNI_CONFIG = {
+  url: 'https://sipni.datasus.gov.br/si-pni-web/faces/inicio.jsf',
+  user: process.env.SIPNI_USER || 'luzsantos',
+  pass: process.env.SIPNI_PASS || 'LOGINDATASUS',
+  apiUrl: 'https://sipni.datasus.gov.br/si-pni-web/rest'
+};
+
+let sipniSession = null;
+let sipniSessionExpiry = 0;
+
+async function authenticateSIPNI() {
+  try {
+    // Se a sessão ainda está válida (menos de 30 min), reutiliza
+    if (sipniSession && Date.now() < sipniSessionExpiry) {
+      return sipniSession;
+    }
+
+    // Tenta autenticar via API REST
+    const res = await fetch(`${SIPNI_CONFIG.apiUrl}/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        usuario: SIPNI_CONFIG.user,
+        senha: SIPNI_CONFIG.pass
+      })
+    });
+
+    if (!res.ok) {
+      console.error('❌ [SIPNI] Falha na autenticação:', res.status);
+      return null;
+    }
+
+    const data = await res.json();
+    sipniSession = data.token || data.session;
+    sipniSessionExpiry = Date.now() + (30 * 60 * 1000); // 30 min
+    console.log('✅ [SIPNI] Autenticado com sucesso');
+    return sipniSession;
+  } catch (e) {
+    console.error('❌ [SIPNI] Erro na autenticação:', e.message);
+    return null;
+  }
+}
+
+async function querySIPNI(endpoint, params = {}) {
+  try {
+    const session = await authenticateSIPNI();
+    if (!session) return { error: 'Autenticação SIPNI falhou' };
+
+    const query = new URLSearchParams(params);
+    const url = `${SIPNI_CONFIG.apiUrl}/${endpoint}?${query}`;
+
+    const res = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${session}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!res.ok) {
+      return { error: `SIPNI API retornou: ${res.status}` };
+    }
+
+    return await res.json();
+  } catch (e) {
+    console.error(`❌ [SIPNI] Erro na query ${endpoint}:`, e.message);
+    return { error: e.message };
+  }
+}
+
 const newSearchBtn = { inline_keyboard: [[{ text: '🔍 NOVA BUSCA', callback_data: 'search_menu', style: 'primary' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'back_start', style: 'primary' }], [{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] };
 const noResultBtn = { inline_keyboard: [[{ text: '🔍 NOVA BUSCA', callback_data: 'search_menu', style: 'primary' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'back_start', style: 'primary' }]] };
 const cancelSearchBtn = { inline_keyboard: [[{ text: '🔴 CANCELAR BUSCA', callback_data: 'cancel_search', style: 'primary' }]] };
@@ -3262,6 +3334,56 @@ export function setupBot(app, pool, writePool, publicPool) {
           }
         }
         
+        // Tratamento SIPNI - CPF
+        if (pendingConsultaKey === 'sipni_cpf') {
+          const cpf = text.trim().replace(/\D/g, '').slice(-11);
+          if (!cpf || cpf.length !== 11) {
+            return bot.sendMessage(chatId, `❌ CPF inválido. Use formato: 12345678901`, opts());
+          }
+          
+          bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
+          try {
+            const result = await querySIPNI('consulta/cpf', { cpf });
+            if (result.error) {
+              return bot.sendMessage(chatId, `❌ Erro ao consultar SIPNI: ${result.error}`, opts());
+            }
+            
+            let msg = `🏥 *Resultado SIPNI - CPF*\n\n`;
+            msg += `CPF: \`${cpf}\`\n`;
+            msg += `📊 Dados: ${JSON.stringify(result).substring(0, 500)}...`;
+            return bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown' }));
+            
+          } catch (e) {
+            console.error('Erro ao consultar SIPNI CPF:', e.message);
+            return bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
+          }
+        }
+        
+        // Tratamento SIPNI - Vacinação
+        if (pendingConsultaKey === 'sipni_vacinacao') {
+          const cpf = text.trim().replace(/\D/g, '').slice(-11);
+          if (!cpf || cpf.length !== 11) {
+            return bot.sendMessage(chatId, `❌ CPF inválido. Use formato: 12345678901`, opts());
+          }
+          
+          bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
+          try {
+            const result = await querySIPNI('consulta/vacinacao', { cpf });
+            if (result.error) {
+              return bot.sendMessage(chatId, `❌ Erro ao consultar SIPNI: ${result.error}`, opts());
+            }
+            
+            let msg = `💉 *Resultado SIPNI - Vacinação*\n\n`;
+            msg += `CPF: \`${cpf}\`\n`;
+            msg += `📊 Dados: ${JSON.stringify(result).substring(0, 500)}...`;
+            return bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown' }));
+            
+          } catch (e) {
+            console.error('Erro ao consultar SIPNI Vacinação:', e.message);
+            return bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
+          }
+        }
+        
         // Tratamento original para outras consultas
         const api = CONSULTA_APIS[pendingConsultaKey];
         if (!api) return bot.sendMessage(chatId, `❌ API inválida.`, opts());
@@ -3598,8 +3720,9 @@ export function setupBot(app, pool, writePool, publicPool) {
         [{ text: '👩 Nome da Mãe', callback_data: 'consultar_mae', style: 'primary' }, { text: '👨 Nome do Pai', callback_data: 'consultar_pai', style: 'primary' }],
         [{ text: '🆔 RG',  callback_data: 'consultar_rg',  style: 'primary' }, { text: '📞 Telefone', callback_data: 'consultar_tel', style: 'primary' }],
         [{ text: '✅ Situação CPF', callback_data: 'consultar_sit_cpf', style: 'primary' }, { text: '💼 Profissão', callback_data: 'consultar_cbo', style: 'primary' }],
-        [{ text: '� Puxar Foto', callback_data: 'consultar_foto', style: 'primary' }],
-        [{ text: '�🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+        [{ text: '📸 Puxar Foto', callback_data: 'consultar_foto', style: 'primary' }],
+        [{ text: '🏥 SIPNI CPF', callback_data: 'sipni_cpf', style: 'primary' }, { text: '💉 SIPNI Vacinação', callback_data: 'sipni_vacinacao', style: 'primary' }],
+        [{ text: ' MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
       ]}})
     );
   }
@@ -4069,12 +4192,13 @@ export function setupBot(app, pool, writePool, publicPool) {
     }
 
     // Botão PUXAR DADOS (GRÁTIS) — abre menu de consulta
+    
     // Botão PUXAR LOGINS — Menu de busca por logins
     if (data === 'puxar_logins') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       return bot.sendMessage(chatId,
-        `🚀 𝗣𝗨𝗫𝗔𝗥 𝗣𝗢𝗥 𝗗𝗔𝗗𝗢𝗦 𝗗𝗘 𝗟𝗢𝗚𝗜𝗡\n\nEscolha o módulo de busca:`,
+        `🚀 𝗣𝗨𝗫𝗔𝗥 �𝗔𝗗𝗢𝗦\n\nEscolha o módulo de busca:`,
         opts({
           parse_mode: 'Markdown',
           reply_markup: {
@@ -4083,9 +4207,9 @@ export function setupBot(app, pool, writePool, publicPool) {
               [{ text: '✉️ EMAILS', callback_data: 'mod_emails', style: 'primary' }],
               [{ text: '👤 USUÁRIOS', callback_data: 'mod_usuarios', style: 'primary' }],
               [{ text: '📞 TELEFONE', callback_data: 'mod_telefone', style: 'primary' }],
-                                          [{ text: '🚀 SUBDOMÍNIOS', callback_data: 'srch_subdominios', style: 'primary' }],
+              [{ text: '🚀 SUBDOMÍNIOS', callback_data: 'srch_subdominios', style: 'primary' }],
               [{ text: '🔌 PROTOCOLOS', callback_data: 'mod_protocolos', style: 'primary' }],
-              [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+              [{ text: ' MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
         })
