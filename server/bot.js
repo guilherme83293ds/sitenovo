@@ -603,76 +603,9 @@ function saveConsultaCache() {
 }
 
 // ══════════════════════════════════════════════════════
-// SIPNI DATASUS INTEGRATION
+// SIPNI DATASUS - INTEGRAÇÃO VIA API LOCAL
+// (As funções de autenticação e query estão em sipni-api.js)
 // ══════════════════════════════════════════════════════
-const SIPNI_CONFIG = {
-  url: 'https://sipni.datasus.gov.br/si-pni-web/faces/inicio.jsf',
-  user: process.env.SIPNI_USER || 'luzsantos',
-  pass: process.env.SIPNI_PASS || 'LOGINDATASUS',
-  apiUrl: 'https://sipni.datasus.gov.br/si-pni-web/rest'
-};
-
-let sipniSession = null;
-let sipniSessionExpiry = 0;
-
-async function authenticateSIPNI() {
-  try {
-    // Se a sessão ainda está válida (menos de 30 min), reutiliza
-    if (sipniSession && Date.now() < sipniSessionExpiry) {
-      return sipniSession;
-    }
-
-    // Tenta autenticar via API REST
-    const res = await fetch(`${SIPNI_CONFIG.apiUrl}/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        usuario: SIPNI_CONFIG.user,
-        senha: SIPNI_CONFIG.pass
-      })
-    });
-
-    if (!res.ok) {
-      console.error('❌ [SIPNI] Falha na autenticação:', res.status);
-      return null;
-    }
-
-    const data = await res.json();
-    sipniSession = data.token || data.session;
-    sipniSessionExpiry = Date.now() + (30 * 60 * 1000); // 30 min
-    console.log('✅ [SIPNI] Autenticado com sucesso');
-    return sipniSession;
-  } catch (e) {
-    console.error('❌ [SIPNI] Erro na autenticação:', e.message);
-    return null;
-  }
-}
-
-async function querySIPNI(endpoint, params = {}) {
-  try {
-    const session = await authenticateSIPNI();
-    if (!session) return { error: 'Autenticação SIPNI falhou' };
-
-    const query = new URLSearchParams(params);
-    const url = `${SIPNI_CONFIG.apiUrl}/${endpoint}?${query}`;
-
-    const res = await fetch(url, {
-      headers: {
-        'Authorization': `Bearer ${session}`,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    if (!res.ok) {
-      return { error: `SIPNI API retornou: ${res.status}` };
-    }
-
-    return await res.json();
-  } catch (e) {
-    console.error(`❌ [SIPNI] Erro na query ${endpoint}:`, e.message);
-    return { error: e.message };
-  }
-}
 
 const newSearchBtn = { inline_keyboard: [[{ text: '🔍 NOVA BUSCA', callback_data: 'search_menu', style: 'primary' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'back_start', style: 'primary' }], [{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] };
 const noResultBtn = { inline_keyboard: [[{ text: '🔍 NOVA BUSCA', callback_data: 'search_menu', style: 'primary' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'back_start', style: 'primary' }]] };
@@ -3360,15 +3293,30 @@ export function setupBot(app, pool, writePool, publicPool) {
           bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
           
           try {
-            const result = await querySIPNI(sipniQuery.endpoint, { [sipniQuery.param]: value });
+            // Usa a API local em vez de chamar SIPNI diretamente
+            const apiResponse = await fetch('http://localhost:3001/api/sipni/consulta', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                tipo: pendingConsultaKey,
+                valor: value
+              })
+            });
+            
+            if (!apiResponse.ok) {
+              return bot.sendMessage(chatId, `❌ Erro na API: ${apiResponse.status}`, opts());
+            }
+            
+            const result = await apiResponse.json();
+            
             if (result.error) {
-              return bot.sendMessage(chatId, `❌ Erro ao consultar SIPNI: ${result.error}`, opts());
+              return bot.sendMessage(chatId, `❌ Erro: ${result.error || result.message}`, opts());
             }
             
             let msg = `🏥 *Resultado SIPNI - ${sipniQuery.name}*\n\n`;
             msg += `🔍 Busca: \`${value}\`\n\n`;
             msg += `📊 *Dados encontrados:*\n`;
-            msg += `\`\`\`json\n${JSON.stringify(result, null, 2).substring(0, 1000)}\n\`\`\``;
+            msg += `\`\`\`json\n${JSON.stringify(result.resultado, null, 2).substring(0, 1000)}\n\`\`\``;
             
             return bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown' }));
           } catch (e) {

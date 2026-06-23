@@ -34,6 +34,7 @@ import QRCode from 'qrcode';
 import cors from 'cors';
 import pg from 'pg';
 import { setupBot, handlePaymentSuccess, isMaintenance } from './bot.js';
+import { querySIPNI, authenticateSIPNI } from './sipni-api.js';
 import Stripe from 'stripe';
 
 const stripeKey = process.env.STRIPE_SECRET_KEY;
@@ -224,6 +225,60 @@ app.post('/api/organize', async (req, res) => {
 });
 
 app.use(cors({ origin: '*', exposedHeaders: ['Content-Disposition'] }));
+
+// ── API SIPNI LOCAL (Cache + Rápida) ──
+app.post('/api/sipni/consulta', async (req, res) => {
+  try {
+    const { tipo, valor } = req.body;
+    
+    if (!tipo || !valor) {
+      return res.status(400).json({ error: 'Parâmetros tipo e valor são obrigatórios' });
+    }
+
+    // Mapeia tipos de consulta para endpoints SIPNI
+    const endpointMap = {
+      cpf: { endpoint: 'consulta/cpf', param: 'cpf' },
+      nome: { endpoint: 'consulta/nome', param: 'nome' },
+      mae: { endpoint: 'consulta/mae', param: 'nome_mae' },
+      pai: { endpoint: 'consulta/pai', param: 'nome_pai' },
+      rg: { endpoint: 'consulta/rg', param: 'rg' },
+      tel: { endpoint: 'consulta/tel', param: 'telefone' },
+      sit_cpf: { endpoint: 'consulta/situacao_cpf', param: 'cpf' },
+      cbo: { endpoint: 'consulta/cbo', param: 'cbo' }
+    };
+
+    const config = endpointMap[tipo];
+    if (!config) {
+      return res.status(400).json({ error: `Tipo de consulta inválido: ${tipo}` });
+    }
+
+    // Faz a consulta SIPNI
+    const result = await querySIPNI(config.endpoint, { [config.param]: valor });
+    
+    res.json({
+      success: true,
+      tipo,
+      valor,
+      resultado: result
+    });
+  } catch (error) {
+    console.error('❌ [API] SIPNI Error:', error.message);
+    res.status(500).json({
+      error: 'Erro ao consultar SIPNI',
+      message: error.message
+    });
+  }
+});
+
+// ── Healthcheck SIPNI ──
+app.get('/api/sipni/health', async (req, res) => {
+  try {
+    await authenticateSIPNI();
+    res.json({ status: 'ok', sipni: 'connected' });
+  } catch (error) {
+    res.status(503).json({ status: 'error', sipni: 'disconnected', message: error.message });
+  }
+});
 
 // ── MODO MANUTENÇÃO — bloqueia acesso ao site ──
 app.use((req, res, next) => {
