@@ -3822,10 +3822,13 @@ export function setupBot(app, pool, writePool, publicPool) {
       bot.answerCallbackQuery(callbackQuery.id, { text: '⏹ Busca cancelada' }).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       // Volta ao menu principal
-      const mockUpdate = {
-        message: { text: '/start', chat: msg.chat, from: callbackQuery.from }
+      const mockMessage = {
+        text: '/start',
+        chat: msg.chat,
+        from: callbackQuery.from,
+        message_id: msg.message_id
       };
-      bot.emit('text', mockUpdate);
+      bot.emit('message', mockMessage);
       return;
     }
 
