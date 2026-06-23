@@ -2401,15 +2401,15 @@ export function setupBot(app, pool, writePool, publicPool) {
 
       if (!text) return;
 
+      // Parse comando e argumento
+      const isCommand = text.startsWith('/');
+
       // Log otimizado (apenas para comandos)
       if (isCommand) {
         const logLine = `[${new Date().toISOString()}] ${username} (${chatId}): ${text}\n`;
         const logsPath = path.join(__dirname, 'bot_logs.txt');
         fs.appendFileSync(logsPath, logLine);
       }
-
-      // Parse comando e argumento
-      const isCommand = text.startsWith('/');
       const command = isCommand ? text.split(' ')[0].toLowerCase().split('@')[0] : null;
       const args = isCommand ? text.split(' ').slice(1).join(' ').trim() : text;
 
