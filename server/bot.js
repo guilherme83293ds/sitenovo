@@ -17,7 +17,7 @@ const archiver = require('archiver');
 import zlib from 'zlib';
 import Stripe from 'stripe';
 import { processReplyMarkup } from './emoji-helpers.js';
-import { searchByEmail, searchByUsername } from './hudsonrock-api.js';
+import { searchByEmail, searchByUsername, searchLeakCheck, searchXposedOrNot, searchIntelX, searchLeakLookup, formatHudsonRockResult } from './hudsonrock-api.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -573,14 +573,14 @@ const pendingConsulta = new Map(); // `${chatId}_${userId}` -> apiKey
 // MAPEAMENTO DE CONSULTAS SIPNI (PUXAR DADOS)
 // ──────────────────────────────────────────────────────
 const SIPNI_CONSULTAS = {
-  cpf:      { name: '🔢 CPF', param: 'cpf', endpoint: 'consulta/cpf' },
-  nome:     { name: '👤 Nome', param: 'nome', endpoint: 'consulta/nome' },
-  mae:      { name: '👩 Nome da Mãe', param: 'nome_mae', endpoint: 'consulta/mae' },
-  pai:      { name: '👨 Nome do Pai', param: 'nome_pai', endpoint: 'consulta/pai' },
-  rg:       { name: '🆔 RG', param: 'rg', endpoint: 'consulta/rg' },
-  tel:      { name: '📞 Telefone', param: 'telefone', endpoint: 'consulta/tel' },
-  sit_cpf:  { name: '✅ Situação CPF', param: 'cpf', endpoint: 'consulta/situacao_cpf' },
-  cbo:      { name: '💼 Profissão (CBO)', param: 'cbo', endpoint: 'consulta/cbo' }
+  cpf:      { name: '🔢 CPF',           param: 'cpf',    endpoint: 'consulta/cpf' },
+  nome:     { name: '👤 Nome',          param: 'nome',   endpoint: 'consulta/nome' },
+  mae:      { name: '👩 Nome da Mãe',  param: 'mae',    endpoint: 'consulta/mae' },
+  pai:      { name: '👨 Nome do Pai',  param: 'pai',    endpoint: 'consulta/pai' },
+  rg:       { name: '🆔 RG',            param: 'rg',     endpoint: 'consulta/rg' },
+  tel:      { name: '📞 Telefone',      param: 'tel',    endpoint: 'consulta/tel' },
+  sit_cpf:  { name: '✅ Situação CPF',  param: 'cpf',    endpoint: 'consulta/situacao' },
+  titulo:   { name: '🗳️ Título Eleitor', param: 'titulo', endpoint: 'consulta/titulo' }
 };
 
 // ── Nossa própria API de consulta (cache local no Railway) ──
@@ -814,13 +814,42 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
 
     if (field === 'email') {
       try {
-        const hrData = await searchByEmail(q);
+        const [hrData, lcData, xonData, ixData, llData] = await Promise.all([
+          searchByEmail(q),
+          searchLeakCheck(q).catch(() => null),
+          searchXposedOrNot(q).catch(() => null),
+          searchIntelX(q).catch(() => null),
+          searchLeakLookup(q).catch(() => null)
+        ]);
         if (hrData && hrData.stealers && hrData.stealers.length > 0) {
-          const s = hrData.stealers;
-          const lines = s.map((st, i) =>
-            `🖥 ${st.computer_name || 'PC'}\n📅 ${st.date_compromised ? new Date(st.date_compromised).toLocaleDateString('pt-BR') : '?'}\n🌐 IP: ${st.ip || '?'}\n🛡 ${st.operating_system || '?'}\n📋 ${(st.top_logins || []).slice(0, 3).map(l => l ? (l.includes('@') ? l.replace(/(.)(.*)(@.*)/, (_, a, b, c) => a + '*'.repeat(Math.min(b.length, 6)) + c) : l[0] + '*'.repeat(Math.min(l.length - 1, 6))) : '—').join(', ')}\n`
-          ).join('\n');
-          await bot.sendMessage(chatId, `🕵️ *Dispositivos infectados:* ${s.length}\n\n${lines}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+          const msg = formatHudsonRockResult(hrData, 'email', q);
+          await bot.sendMessage(chatId, '```\n' + msg.replace(/```/g, '') + '\n```', opts({ parse_mode: 'Markdown' })).catch(() => {});
+        }
+        let breachSources = [];
+        let totalFound = 0;
+        if (lcData && lcData.success && lcData.found > 0) {
+          totalFound += lcData.found;
+          breachSources = breachSources.concat((lcData.sources || []).map(s => `${s.name}${s.date ? ' (' + s.date + ')' : ''}`));
+        }
+        if (xonData && xonData.breaches && xonData.breaches.length > 0) {
+          const names = xonData.breaches.flat().filter(Boolean);
+          totalFound += names.length;
+          breachSources = breachSources.concat(names);
+        }
+        if (ixData && ixData.records && ixData.records.length > 0) {
+          totalFound += ixData.records.length;
+          breachSources = breachSources.concat(...ixData.records.map(r => r.name ? [r.name] : []));
+        }
+        if (llData && llData.error === false && llData.message) {
+          const names = Object.keys(llData.message).slice(0, 20);
+          if (names.length > 0) {
+            totalFound += names.length;
+            breachSources = breachSources.concat(names);
+          }
+        }
+        if (breachSources.length > 0) {
+          const unique = [...new Set(breachSources)].slice(0, 25);
+          await bot.sendMessage(chatId, `📋 *Vazamentos encontrados:* ${totalFound}\n\n${unique.map(s => `• ${s}`).join('\n')}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
         }
       } catch (e) {}
     }
@@ -1036,14 +1065,6 @@ async function sendUserResults(chatId, query, pool, threadId) {
     const safeQuery = q.replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 40);
     const limitNote = res.rows.length >= MAX_ROWS ? `\n⚠️ _Limite de ${MAX_ROWS.toLocaleString('pt-BR')} resultados atingido_` : '';
 
-    let hudsonContent = '';
-    try {
-      const hrData = await searchByUsername(q);
-      if (hrData && hrData.stealers && hrData.stealers.length > 0) {
-        hudsonContent = `\n\n${'='.repeat(60)}\n🕵️ HUDSONROCK - DISPOSITIVOS INFECTADOS\n${'='.repeat(60)}\n${formatHr(hrData, 'username', q).replace(/^.*?\n/, '')}`;
-      }
-    } catch (e) {}
-
     await bot.sendDocument(chatId, Buffer.from(content, 'utf8'), opts({
       caption: `✅ *USER:* \`${q}\`\n📂 _${cleanedRows.length.toLocaleString('pt-BR')} resultados encontrados_${limitNote}`,
       parse_mode: 'Markdown',
@@ -1051,13 +1072,42 @@ async function sendUserResults(chatId, query, pool, threadId) {
     }), { filename: `BREACH_user_${safeQuery}.txt`, contentType: 'text/plain' });
 
     try {
-      const hrData = await searchByUsername(q);
+      const [hrData, lcData, xonData, ixData, llData] = await Promise.all([
+        searchByUsername(q),
+        searchLeakCheck(q).catch(() => null),
+        searchXposedOrNot(q).catch(() => null),
+        searchIntelX(q).catch(() => null),
+        searchLeakLookup(q).catch(() => null)
+      ]);
       if (hrData && hrData.stealers && hrData.stealers.length > 0) {
-        const s = hrData.stealers;
-        const lines = s.map((st, i) =>
-          `🖥 ${st.computer_name || 'PC'}\n📅 ${st.date_compromised ? new Date(st.date_compromised).toLocaleDateString('pt-BR') : '?'}\n🌐 IP: ${st.ip || '?'}\n🛡 ${st.operating_system || '?'}\n📋 ${(st.top_logins || []).slice(0, 3).map(l => l ? (l.includes('@') ? l.replace(/(.)(.*)(@.*)/, (_, a, b, c) => a + '*'.repeat(Math.min(b.length, 6)) + c) : l[0] + '*'.repeat(Math.min(l.length - 1, 6))) : '—').join(', ')}\n`
-        ).join('\n');
-        await bot.sendMessage(chatId, `🕵️ *Dispositivos infectados:* ${s.length}\n\n${lines}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+        const msg = formatHudsonRockResult(hrData, 'username', q);
+        await bot.sendMessage(chatId, '```\n' + msg.replace(/```/g, '') + '\n```', opts({ parse_mode: 'Markdown' })).catch(() => {});
+      }
+      let breachSources = [];
+      let totalFound = 0;
+      if (lcData && lcData.success && lcData.found > 0) {
+        totalFound += lcData.found;
+        breachSources = breachSources.concat((lcData.sources || []).map(s => `${s.name}${s.date ? ' (' + s.date + ')' : ''}`));
+      }
+        if (xonData && xonData.breaches && xonData.breaches.length > 0) {
+          const names = xonData.breaches.flat().filter(Boolean);
+          totalFound += names.length;
+          breachSources = breachSources.concat(names);
+        }
+      if (ixData && ixData.records && ixData.records.length > 0) {
+        totalFound += ixData.records.length;
+        breachSources = breachSources.concat(...ixData.records.map(r => r.name ? [r.name] : []));
+      }
+      if (llData && llData.error === false && llData.message) {
+        const names = Object.keys(llData.message).slice(0, 20);
+        if (names.length > 0) {
+          totalFound += names.length;
+          breachSources = breachSources.concat(names);
+        }
+      }
+      if (breachSources.length > 0) {
+        const unique = [...new Set(breachSources)].slice(0, 25);
+        await bot.sendMessage(chatId, `📋 *Vazamentos encontrados:* ${totalFound}\n\n${unique.map(s => `• ${s}`).join('\n')}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
       }
     } catch (e) {}
 
@@ -1128,6 +1178,14 @@ async function sendIpResults(chatId, query, pool, threadId) {
       parse_mode: 'Markdown',
       reply_markup: newSearchBtn
     }), { filename: `BREACH_ip_${safeQuery}.txt`, contentType: 'text/plain' });
+
+    try {
+      const lcData = await searchLeakCheck(q).catch(() => null);
+      if (lcData && lcData.success && lcData.found > 0) {
+        const src = (lcData.sources || []).slice(0, 15).map(s => `• ${s.name}${s.date ? ' (' + s.date + ')' : ''}`).join('\n');
+        await bot.sendMessage(chatId, `📋 *Vazamentos encontrados para IP:* ${lcData.found}\n\n${src}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+      }
+    } catch (e) {}
 
   } catch (err) {
     if (loadingMsg) bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
@@ -3145,6 +3203,99 @@ export function setupBot(app, pool, writePool, publicPool) {
         return;
       }
 
+      // /consultas — Retorna informações sobre consultas disponíveis
+      if (command === '/consultas' || command === '/tipos' || command === '/listar') {
+        bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
+        try {
+          const baseUrl = process.env.BASE_URL || 'http://localhost:3001';
+          const token = `Bearer ${msg.from?.id || chatId}`;
+          
+          const ctrl = new AbortController();
+          const t = setTimeout(() => ctrl.abort(), 10000);
+          
+          const res = await fetch(`${baseUrl}/api/consultas`, {
+            method: 'GET',
+            headers: {
+              'Authorization': token,
+              'Accept': 'application/json'
+            },
+            signal: ctrl.signal
+          });
+          clearTimeout(t);
+          
+          if (!res.ok) {
+            return bot.sendMessage(chatId, 
+              `❌ Erro ao obter consultas disponíveis: ${res.status}`,
+              opts({ parse_mode: 'Markdown' })
+            );
+          }
+          
+          const data = await res.json();
+          
+          if (!data.success) {
+            return bot.sendMessage(chatId,
+              `❌ Erro: ${data.error || 'Falha ao carregar consultas'}`,
+              opts({ parse_mode: 'Markdown' })
+            );
+          }
+          
+          const user = data.usuario;
+          const status = data.status;
+          const tipos = data.consultas_disponiveis;
+          
+          let response = `📋 *CONSULTAS DISPONÍVEIS*\n\n`;
+          response += `👤 *Usuário:* ${user.email}\n`;
+          response += `📊 *Status:* ${status.tipo === 'premium' ? '💎 PREMIUM' : '🟢 TRIAL'}\n`;
+          response += `🔍 *Buscas:* ${status.buscas_disponiveis}\n`;
+          
+          if (user.premium_until) {
+            const d = new Date(user.premium_until);
+            response += `⏳ *Expira em:* ${d.toLocaleDateString('pt-BR')}\n`;
+          }
+          
+          response += `\n═══════════════════════════\n`;
+          response += `📚 *TIPOS DE CONSULTA (${data.quantidade_tipos}):*\n\n`;
+          
+          for (const [key, consulta] of Object.entries(tipos)) {
+            response += `*${consulta.nome}*\n`;
+            response += `Descrição: ${consulta.descricao}\n`;
+            response += `Endpoint: \`${consulta.endpoint}\`\n`;
+            response += `Método: ${consulta.metodo || 'GET'}\n`;
+            
+            if (key === 'sipni' && consulta.tipos_sipni) {
+              response += `Tipos: \`${consulta.tipos_sipni.join(', ')}\`\n`;
+            }
+            
+            response += `\n`;
+          }
+          
+          response += `💡 *Exemplos de uso:*\n`;
+          response += `\`/cpf 12345678900\`\n`;
+          response += `\`/email usuario@email.com\`\n`;
+          response += `\`/telefone 11987654321\`\n`;
+          response += `\`/url site.com\`\n`;
+          
+          const buttons = [
+            [{ text: '📋 CPF', callback_data: 'cmd_cpf' }, { text: '📧 EMAIL', callback_data: 'cmd_email' }],
+            [{ text: '📞 TELEFONE', callback_data: 'cmd_tel' }, { text: '🌐 URL', callback_data: 'cmd_url' }],
+            [{ text: '🔎 CONSULTA SIPNI', callback_data: 'consulta_menu' }],
+            [{ text: '🏠 MENU', callback_data: 'cmd_menu' }, { text: '🔴 FECHAR', callback_data: 'cancel_search' }]
+          ];
+          
+          await bot.sendMessage(chatId, response, opts({
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: buttons }
+          }));
+          
+        } catch (err) {
+          const msg = err.name === 'AbortError' 
+            ? `⏱️ *Timeout ao conectar com a API*`
+            : `❌ Erro: ${err.message}`;
+          bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown' })).catch(() => {});
+        }
+        return;
+      }
+
       // /consulta — Consultas Avançadas
       if (command === '/consulta' || command === '/consultar') {
         return showConsultaMenu(chatId, threadId);
@@ -3328,7 +3479,7 @@ export function setupBot(app, pool, writePool, publicPool) {
           
           try {
             // Usa a API local em vez de chamar SIPNI diretamente
-            const apiResponse = await fetch('http://localhost:3001/api/sipni/consulta', {
+            const apiResponse = await fetch(`${BASE_URL}/api/sipni/consulta`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -3344,13 +3495,62 @@ export function setupBot(app, pool, writePool, publicPool) {
             const result = await apiResponse.json();
             
             if (result.error) {
-              return bot.sendMessage(chatId, `❌ Erro: ${result.error || result.message}`, opts());
+              return bot.sendMessage(chatId, `❌ ${result.error}`, opts());
             }
             
-            let msg = `🏥 *Resultado SIPNI - ${sipniQuery.name}*\n\n`;
-            msg += `🔍 Busca: \`${value}\`\n\n`;
-            msg += `📊 *Dados encontrados:*\n`;
-            msg += `\`\`\`json\n${JSON.stringify(result.resultado, null, 2).substring(0, 1000)}\n\`\`\``;
+            const dados = result.resultado;
+            if (!dados || (dados.error)) {
+              return bot.sendMessage(chatId, `❌ ${dados?.error || 'Nenhum dado encontrado'}`, opts());
+            }
+            
+            let msg = `🏥 *${sipniQuery.name}*\n\n`;
+            msg += `🔍 \`${value}\`\n\n`;
+            if (dados.nome) msg += `👤 *Nome:* ${dados.nome}\n`;
+            if (dados.cpf) msg += `🔢 *CPF:* ${dados.cpf}\n`;
+            if (dados.sexo) msg += `⚤ *Sexo:* ${dados.sexo}\n`;
+            if (dados.dataNascimento) msg += `🎂 *Nasc:* ${dados.dataNascimento}\n`;
+            if (dados.nomeMae) msg += `👩 *Mãe:* ${dados.nomeMae}\n`;
+            if (dados.nomePai) msg += `👨 *Pai:* ${dados.nomePai}\n`;
+            if (dados.rg) msg += `🆔 *RG:* ${dados.rg}${dados.orgaoEmissor ? ` (${dados.orgaoEmissor}${dados.ufEmissao ? '/'+dados.ufEmissao : ''})` : ''}\n`;
+            if (dados.tituloEleitor) msg += `🗳️ *Título:* ${dados.tituloEleitor}\n`;
+            if (dados.estCivil) msg += `💍 *EstCivil:* ${dados.estCivil}\n`;
+            if (dados.renda) msg += `💰 *Renda:* R$ ${dados.renda}\n`;
+            if (dados.cbo) msg += `💼 *CBO:* ${dados.cbo}\n`;
+            if (dados.situacao) msg += `✅ *Situação:* ${dados.situacao}\n`;
+            if (dados.situacaoCadastro) msg += `📋 *SitCad:* ${dados.situacaoCadastro}\n`;
+            if (dados.obito) msg += `💀 *Óbito*\n`;
+            
+            if (dados.telefones && dados.telefones.length > 0) {
+              const phones = dados.telefones.slice(0, 5).map(t => {
+                const ddd = t.DDD || '';
+                const num = t.TELEFONE || t.telefone || '';
+                return ddd ? `(${ddd}) ${num}` : num;
+              }).join(', ');
+              msg += `📞 *Telefones:* ${phones}${dados.telefones.length > 5 ? ` (+${dados.telefones.length-5})` : ''}\n`;
+            }
+            if (dados.emails && dados.emails.length > 0) {
+              msg += `✉️ *Emails:* ${dados.emails.slice(0, 3).map(e => e.EMAIL || e.email || e).join(', ')}${dados.emails.length > 3 ? ` (+${dados.emails.length-3})` : ''}\n`;
+            }
+            if (dados.enderecos && dados.enderecos.length > 0) {
+              const addr = dados.enderecos[0];
+              if (addr) {
+                let addrStr = `${addr.LOGR_NOME || ''}, ${addr.LOGR_NUMERO || ''}`;
+                if (addr.BAIRRO) addrStr += ` - ${addr.BAIRRO}`;
+                if (addr.CIDADE) addrStr += `, ${addr.CIDADE}`;
+                if (addr.UF) addrStr += `/${addr.UF}`;
+                if (addr.CEP) addrStr += ` (${addr.CEP})`;
+                msg += `📍 *End:* ${addrStr}\n`;
+                if (dados.enderecos.length > 1) msg += `   _+${dados.enderecos.length-1} endereços_\n`;
+              }
+            }
+            if (dados.score && dados.score.length > 0) {
+              const s = dados.score[0];
+              if (s.CSB8) msg += `📊 *Score:* ${s.CSB8} (${s.CSB8_FAIXA})\n`;
+            }
+            
+            if (msg === `🏥 *${sipniQuery.name}*\n\n🔍 \`${value}\`\n\n`) {
+              msg = `🏥 *${sipniQuery.name}*\n\n🔍 \`${value}\`\n\n_Dados encontrados, mas sem campos formatáveis._\n\`\`\`json\n${JSON.stringify(dados).substring(0, 500)}\n\`\`\``;
+            }
             
             return bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown' }));
           } catch (e) {
@@ -3690,7 +3890,7 @@ export function setupBot(app, pool, writePool, publicPool) {
         [{ text: '🔢 CPF',     callback_data: 'consultar_cpf',     style: 'primary' }, { text: '👤 Nome', callback_data: 'consultar_nome', style: 'primary' }],
         [{ text: '👩 Nome da Mãe', callback_data: 'consultar_mae', style: 'primary' }, { text: '👨 Nome do Pai', callback_data: 'consultar_pai', style: 'primary' }],
         [{ text: '🆔 RG',  callback_data: 'consultar_rg',  style: 'primary' }, { text: '📞 Telefone', callback_data: 'consultar_tel', style: 'primary' }],
-        [{ text: '✅ Situação CPF', callback_data: 'consultar_sit_cpf', style: 'primary' }, { text: '💼 Profissão', callback_data: 'consultar_cbo', style: 'primary' }],
+        [{ text: '✅ Situação CPF', callback_data: 'consultar_sit_cpf', style: 'primary' }, { text: '🗳️ Título Eleitor', callback_data: 'consultar_titulo', style: 'primary' }],
         [{ text: '📸 Puxar Foto', callback_data: 'consultar_foto', style: 'primary' }],
         [{ text: '� MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
       ]}})
@@ -4164,11 +4364,11 @@ export function setupBot(app, pool, writePool, publicPool) {
         rg: '123456789',
         tel: '11999999999',
         sit_cpf: '12345678901',
-        cbo: 'Programador'
+        titulo: '026391180205'
       };
 
       return bot.sendMessage(chatId,
-        `${sipniQuery.name} *- Consultar no SIPNI*\n\nEnvie o *${sipniQuery.param}* para consultar:\n\n` +
+        `${sipniQuery.name} *- Consulta de Dados*\n\nEnvie o *${sipniQuery.param}* para consultar:\n\n` +
         `_Exemplo: \`${examples[apiKey] || 'valor'}\`_\n\n` + extraText,
         opts({ parse_mode: 'Markdown', reply_markup: replyMarkup })
       );

@@ -227,7 +227,7 @@ app.post('/api/organize', async (req, res) => {
 app.use(cors({ origin: '*', exposedHeaders: ['Content-Disposition'] }));
 
 // ── API SIPNI LOCAL (Cache + Rápida) ──
-app.post('/api/sipni/consulta', async (req, res) => {
+app.post('/api/sipni/consulta', express.json({ limit: '1mb' }), async (req, res) => {
   try {
     const { tipo, valor } = req.body;
     
@@ -235,16 +235,16 @@ app.post('/api/sipni/consulta', async (req, res) => {
       return res.status(400).json({ error: 'Parâmetros tipo e valor são obrigatórios' });
     }
 
-    // Mapeia tipos de consulta para endpoints SIPNI
+    // Mapeia tipos de consulta para endpoints apisbrasilpro
     const endpointMap = {
-      cpf: { endpoint: 'consulta/cpf', param: 'cpf' },
-      nome: { endpoint: 'consulta/nome', param: 'nome' },
-      mae: { endpoint: 'consulta/mae', param: 'nome_mae' },
-      pai: { endpoint: 'consulta/pai', param: 'nome_pai' },
-      rg: { endpoint: 'consulta/rg', param: 'rg' },
-      tel: { endpoint: 'consulta/tel', param: 'telefone' },
-      sit_cpf: { endpoint: 'consulta/situacao_cpf', param: 'cpf' },
-      cbo: { endpoint: 'consulta/cbo', param: 'cbo' }
+      cpf:      { endpoint: 'consulta/cpf',      param: 'cpf' },
+      nome:     { endpoint: 'consulta/nome',     param: 'nome' },
+      mae:      { endpoint: 'consulta/mae',      param: 'mae' },
+      pai:      { endpoint: 'consulta/pai',      param: 'pai' },
+      rg:       { endpoint: 'consulta/rg',       param: 'rg' },
+      tel:      { endpoint: 'consulta/tel',      param: 'tel' },
+      sit_cpf:  { endpoint: 'consulta/situacao', param: 'cpf' },
+      titulo:   { endpoint: 'consulta/titulo',   param: 'titulo' },
     };
 
     const config = endpointMap[tipo];
@@ -584,6 +584,95 @@ app.get('/api/public-search', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error('public-search error:', err.message);
     return res.status(500).json({ success: false, results: [], total: 0, error: err.message });
+  }
+});
+
+
+// ══════════════════════════════════════════════════════
+// GET /api/consultas — Retorna status e tipos de consultas disponíveis
+// ══════════════════════════════════════════════════════
+app.get('/api/consultas', authMiddleware, async (req, res) => {
+  try {
+    const user = req.user;
+    const isPremium = user.premium_until && new Date(user.premium_until) > new Date();
+    const trialSearches = user.trial_searches || 0;
+
+    // Tipos de consultas disponíveis
+    const consultasDisponiveis = {
+      cpf: {
+        nome: 'Busca por CPF',
+        descricao: 'Buscar dados completos de uma pessoa pelo CPF',
+        endpoint: '/api/consulta/:cpf',
+        parametros: { cpf: 'string (11 dígitos)' },
+        exemplo: '/api/consulta/12345678901'
+      },
+      nome: {
+        nome: 'Busca por Nome',
+        descricao: 'Buscar pessoas pelo nome completo',
+        endpoint: '/api/consulta/busca/nome?q=Nome',
+        parametros: { q: 'string (mínimo 2 caracteres)' },
+        exemplo: '/api/consulta/busca/nome?q=João Silva'
+      },
+      rg: {
+        nome: 'Busca por RG',
+        descricao: 'Buscar dados pelo número de RG',
+        endpoint: '/api/consulta/busca/rg?q=RG',
+        parametros: { q: 'string' },
+        exemplo: '/api/consulta/busca/rg?q=123456789'
+      },
+      mae: {
+        nome: 'Busca por Mãe',
+        descricao: 'Buscar pessoas pelo nome da mãe',
+        endpoint: '/api/consulta/busca/mae?q=Nome',
+        parametros: { q: 'string' },
+        exemplo: '/api/consulta/busca/mae?q=Maria Silva'
+      },
+      pai: {
+        nome: 'Busca por Pai',
+        descricao: 'Buscar pessoas pelo nome do pai',
+        endpoint: '/api/consulta/busca/pai?q=Nome',
+        parametros: { q: 'string' },
+        exemplo: '/api/consulta/busca/pai?q=José Silva'
+      },
+      telefone: {
+        nome: 'Busca por Telefone',
+        descricao: 'Buscar pessoas pelo número de telefone',
+        endpoint: '/api/consulta/busca/tel?q=Telefone',
+        parametros: { q: 'string' },
+        exemplo: '/api/consulta/busca/tel?q=11987654321'
+      },
+      sipni: {
+        nome: 'Consulta SIPNI',
+        descricao: 'Consultas avançadas através do SIPNI',
+        endpoint: '/api/sipni/consulta',
+        metodo: 'POST',
+        parametros: { tipo: 'string', valor: 'string' },
+        tipos_sipni: ['cpf', 'nome', 'mae', 'pai', 'rg', 'tel', 'sit_cpf', 'titulo'],
+        exemplo: { tipo: 'cpf', valor: '12345678901' }
+      }
+    };
+
+    res.json({
+      success: true,
+      usuario: {
+        id: user.id,
+        email: user.email,
+        display_name: user.display_name,
+        premium: isPremium,
+        premium_until: user.premium_until || null,
+        trial_searches: trialSearches
+      },
+      status: {
+        autenticado: true,
+        tipo: isPremium ? 'premium' : 'trial',
+        buscas_disponiveis: isPremium ? 'ilimitadas' : trialSearches
+      },
+      consultas_disponiveis: consultasDisponiveis,
+      quantidade_tipos: Object.keys(consultasDisponiveis).length
+    });
+  } catch (err) {
+    console.error('[CONSULTAS ERROR]', err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

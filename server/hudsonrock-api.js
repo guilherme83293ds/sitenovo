@@ -1,4 +1,9 @@
 const FREE_API_BASE = 'https://cavalier.hudsonrock.com/api/json/v2/osint-tools';
+const LEAKCHECK_API = 'https://leakcheck.io/api/public';
+const XON_API = 'https://api.xposedornot.com/v1';
+const INTELX_BASE = process.env.INTELX_BASE_URL || 'https://free.intelx.io';
+const INTELX_KEY = process.env.INTELX_API_KEY || '';
+const LEAKLOOKUP_KEY = process.env.LEAKLOOKUP_API_KEY || '';
 
 function mask(text) {
   if (!text) return text;
@@ -26,14 +31,66 @@ async function searchByUsername(username) {
   return res.json();
 }
 
+async function searchLeakCheck(query) {
+  const url = `${LEAKCHECK_API}?check=${encodeURIComponent(query)}`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
+    signal: AbortSignal.timeout(8000)
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+async function searchXposedOrNot(email) {
+  const url = `${XON_API}/check-email/${encodeURIComponent(email)}`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+async function searchIntelX(term) {
+  if (!INTELX_KEY) return null;
+  try {
+    const searchRes = await fetch(`${INTELX_BASE}/intelligent/search`, {
+      method: 'POST',
+      headers: { 'x-key': INTELX_KEY, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ term, maxresults: 100, media: 0, terminate: [], timeout: 10 }),
+      signal: AbortSignal.timeout(15000)
+    });
+    if (!searchRes.ok) return null;
+    const { id } = await searchRes.json();
+    if (!id) return null;
+    await new Promise(r => setTimeout(r, 3000));
+    const resultRes = await fetch(`${INTELX_BASE}/intelligent/search/result?id=${id}&limit=100&offset=0`, {
+      headers: { 'x-key': INTELX_KEY },
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!resultRes.ok) return null;
+    return resultRes.json();
+  } catch (e) { return null; }
+}
+
+async function searchLeakLookup(query, type = 'email_address') {
+  if (!LEAKLOOKUP_KEY) return null;
+  const url = 'https://leak-lookup.com/api/search';
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: `key=${encodeURIComponent(LEAKLOOKUP_KEY)}&type=${encodeURIComponent(type)}&query=${encodeURIComponent(query)}`,
+    signal: AbortSignal.timeout(10000)
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
 function formatHudsonRockResult(data, searchType, searchValue) {
   if (!data || !data.stealers || data.stealers.length === 0) {
-    return `HudsonRock: Nenhum resultado encontrado para ${searchType} "${searchValue}"`;
+    return `Nenhum resultado encontrado para ${searchType} "${searchValue}"`;
   }
 
   const stealers = data.stealers;
   let output = '';
-  output += `HudsonRock - Resultados para ${searchType}: "${searchValue}"\n`;
+  output += `Resultados para ${searchType}: "${searchValue}"\n`;
   output += `Total de dispositivos infectados: ${stealers.length}\n`;
   output += `Total de serviços corporativos: ${data.total_corporate_services ?? 0}\n`;
   output += `Total de serviços de usuário: ${data.total_user_services ?? 0}\n`;
@@ -77,4 +134,4 @@ async function formatText(searchType, searchValue) {
   return formatHudsonRockResult(data, searchType, searchValue);
 }
 
-export { searchByEmail, searchByUsername, formatHudsonRockResult, formatText };
+export { searchByEmail, searchByUsername, searchLeakCheck, searchXposedOrNot, searchIntelX, searchLeakLookup, formatHudsonRockResult, formatText };
