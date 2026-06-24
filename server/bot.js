@@ -568,6 +568,7 @@ const queryStore = new Map();
 const pendingBoleto = new Map(); // chatId -> { planIdx, plan }
 const pendingSearch = new Map(); // `${chatId}_${userId}` -> fieldName
 const pendingConsulta = new Map(); // `${chatId}_${userId}` -> apiKey
+const pendingConfig = new Map(); // chatId -> 'api_key' | 'max_results'
 
 // ── Nossa própria API de consulta (cache local no Railway) ──
 const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3001}`;
@@ -2594,6 +2595,7 @@ export function setupBot(app, pool, writePool, publicPool) {
           [{ text: '📜 COMANDOS', callback_data: 'list_commands', style: 'primary' }],
           [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
           [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
+          [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }],
           [{ text: '➕ ADICIONAR AO GRUPO', url: `https://t.me/${TOKEN.split(':')[0]}?startgroup=1&admin=post_messages,edit_messages,delete_messages,manage_messages`, style: 'primary' }]
         ];
         const markup = {
@@ -3294,6 +3296,97 @@ export function setupBot(app, pool, writePool, publicPool) {
         }
       }
 
+      // Verifica se está aguardando configuração
+      const configType = pendingConfig.get(chatId);
+      if (configType) {
+        pendingConfig.delete(chatId);
+        
+        if (configType === 'api_key') {
+          const key = text.trim();
+          if (!key || key.length < 5) {
+            return bot.sendMessage(chatId, `❌ Chave inválida. Digite uma chave com mínimo 5 caracteres.`, opts());
+          }
+          
+          try {
+            // Verificar se a chave é válida no banco
+            const keyCheck = await _writePool.query(
+              `SELECT duration_seconds FROM license_keys WHERE key = $1 AND activated_by IS NULL`,
+              [key]
+            );
+            
+            if (!keyCheck.rows || keyCheck.rows.length === 0) {
+              return bot.sendMessage(chatId, `❌ Chave inválida ou já utilizada. Verifique sua chave.`, opts());
+            }
+            
+            // Ativar a chave
+            const duration = keyCheck.rows[0].duration_seconds;
+            const expiresAt = duration ? new Date(Date.now() + duration * 1000) : null;
+            
+            await _writePool.query(
+              `UPDATE license_keys SET activated_by = $1, activated_at = NOW() WHERE key = $2`,
+              [chatId, key]
+            );
+            
+            await _writePool.query(
+              `UPDATE users SET premium_until = $1, max_results = 100000 WHERE user_id = $2`,
+              [expiresAt, chatId]
+            );
+            
+            const expiresText = expiresAt 
+              ? `📅 Expira em: ${expiresAt.toLocaleDateString('pt-BR')}`
+              : `📅 Acesso vitalício`;
+            
+            return bot.sendMessage(chatId,
+              `✅ *Plano Ativado com Sucesso!*\n\n` +
+              `${expiresText}\n` +
+              `📊 Máximo de resultados: 100.000\n\n` +
+              `🎉 Aproveite seu acesso premium!`,
+              opts({ parse_mode: 'Markdown' })
+            );
+          } catch (e) {
+            console.error('[API KEY ERROR]', e.message);
+            return bot.sendMessage(chatId, `❌ Erro ao ativar chave: ${e.message}`, opts());
+          }
+        }
+        
+        if (configType === 'max_results') {
+          const value = parseInt(text.trim());
+          
+          if (isNaN(value) || value < 0) {
+            return bot.sendMessage(chatId, `❌ Valor inválido. Digite um número.`, opts());
+          }
+          
+          try {
+            const user = await _writePool.query('SELECT premium_until FROM users WHERE user_id = $1', [chatId]);
+            const isPremium = user.rows[0]?.premium_until && new Date(user.rows[0].premium_until) > new Date();
+            const maxLimit = isPremium ? 100000 : 100;
+            
+            if (value > maxLimit) {
+              return bot.sendMessage(chatId,
+                `❌ Limite excedido!\n\n` +
+                `${isPremium ? '💎 Premium: máx 100.000' : '🟢 Free: máx 100'}`,
+                opts()
+              );
+            }
+            
+            await _writePool.query(
+              `UPDATE users SET max_results = $1 WHERE user_id = $2`,
+              [value, chatId]
+            );
+            
+            return bot.sendMessage(chatId,
+              `✅ *Máximo de resultados atualizado!*\n\n` +
+              `📊 Novo limite: ${value.toLocaleString('pt-BR')} resultados`,
+              opts({ parse_mode: 'Markdown' })
+            );
+          } catch (e) {
+            console.error('[MAX RESULTS ERROR]', e.message);
+            return bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
+          }
+        }
+        return;
+      }
+
       // Verifica se está aguardando valor para consulta externa
       const pendingConsultaKey = pendingConsulta.get(userKey) || pendingConsulta.get(chatId);
       if (pendingConsultaKey) {
@@ -3841,6 +3934,96 @@ export function setupBot(app, pool, writePool, publicPool) {
           }
         })
       );
+    }
+
+    // Botão CONFIGURAÇÕES
+    if (data === 'config_menu') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      
+      try {
+        const user = await _writePool.query('SELECT premium_until, max_results FROM users WHERE user_id = $1', [chatId]);
+        const userData = user.rows[0];
+        const isPremium = userData?.premium_until && new Date(userData.premium_until) > new Date();
+        const expiresIn = userData?.premium_until ? new Date(userData.premium_until).toLocaleDateString('pt-BR') : 'Não ativado';
+        const maxResults = userData?.max_results || 100;
+        
+        const statusText = isPremium 
+          ? `✅ *Plano Ativo*\n📅 Expira em: ${expiresIn}\n📊 Máx de resultados: ${maxResults.toLocaleString('pt-BR')}`
+          : `❌ *Plano Não Ativado*\n📊 Máx de resultados: ${maxResults}`;
+        
+        return bot.sendMessage(chatId,
+          `⚙️ *CONFIGURAÇÕES*\n\n${statusText}\n\n` +
+          `Escolha uma opção:`,
+          opts({
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🔑 INSERIR API KEY', callback_data: 'config_api_key', style: 'primary' }],
+                [{ text: '📊 MÁXIMO DE RESULTADOS', callback_data: 'config_max_results', style: 'primary' }],
+                [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+              ]
+            }
+          })
+        );
+      } catch (e) {
+        console.error('[CONFIG ERROR]', e.message);
+        return bot.sendMessage(chatId, `❌ Erro ao carregar configurações: ${e.message}`, opts());
+      }
+    }
+
+    // Handler para INSERIR API KEY
+    if (data === 'config_api_key') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      pendingConfig.set(chatId, 'api_key');
+      
+      return bot.sendMessage(chatId,
+        `🔑 *INSERIR API KEY*\n\n` +
+        `Digite sua chave de ativação (ou /cancelar para voltar):\n\n` +
+        `_Exemplo: KEY-ABC123DEF456_`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔴 CANCELAR', callback_data: 'config_menu', style: 'primary' }]
+            ]
+          }
+        })
+      );
+    }
+
+    // Handler para MÁXIMO DE RESULTADOS
+    if (data === 'config_max_results') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      
+      try {
+        const user = await _writePool.query('SELECT premium_until FROM users WHERE user_id = $1', [chatId]);
+        const isPremium = user.rows[0]?.premium_until && new Date(user.rows[0].premium_until) > new Date();
+        const maxLimit = isPremium ? 100000 : 100;
+        
+        pendingConfig.set(chatId, 'max_results');
+        
+        return bot.sendMessage(chatId,
+          `📊 *MÁXIMO DE RESULTADOS*\n\n` +
+          `${isPremium ? '💎 Você é Premium' : '🟢 Você é Free'}\n` +
+          `📊 Limite: 0 a ${maxLimit.toLocaleString('pt-BR')}\n\n` +
+          `Digite um número ou /cancelar:\n\n` +
+          `_Exemplo: 1000_`,
+          opts({
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🔴 CANCELAR', callback_data: 'config_menu', style: 'primary' }]
+              ]
+            }
+          })
+        );
+      } catch (e) {
+        console.error('[MAX RESULTS CONFIG ERROR]', e.message);
+        return bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
+      }
     }
 
     // Botão MONITORAR — Monitoramento em tempo real
