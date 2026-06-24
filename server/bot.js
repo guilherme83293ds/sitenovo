@@ -2594,7 +2594,7 @@ export function setupBot(app, pool, writePool, publicPool) {
           [{ text: '📜 COMANDOS', callback_data: 'list_commands', style: 'primary' }],
           [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
           [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
-          [{ text: '➕ ADICIONAR AO GRUPO', url: `https://t.me/${TOKEN.split(':')[0]}?startgroup=true`, style: 'primary' }]
+          [{ text: '➕ ADICIONAR AO GRUPO', url: `https://t.me/${TOKEN.split(':')[0]}?startgroup=1&admin=post_messages,edit_messages,delete_messages,manage_messages`, style: 'primary' }]
         ];
         const markup = {
           reply_markup: {
