@@ -65,90 +65,74 @@ async function authenticateSIPNI() {
     console.log('🔐 [SIPNI] Autenticando (Token + Cookies)...');
 
     const credentials = Buffer.from(`${SIPNI_CONFIG.user}:${SIPNI_CONFIG.pass}`).toString('base64');
-    const baseUrl = SIPNI_CONFIG.baseUrl || SIPNI_CONFIG.endpoints[0];
-
-    // Tenta diferentes endpoints de autenticação
+    
+    // Tenta todos os endpoints conhecidos
     const authEndpoints = [
-      { url: `${baseUrl}/autenticacao/autenticar`, method: 'POST', needsBasic: false },
-      { url: `${baseUrl}/auth/login`, method: 'POST', needsBasic: false },
-      { url: `${baseUrl}/login`, method: 'POST', needsBasic: false },
-      { url: `${baseUrl}/autenticacao`, method: 'POST', needsBasic: false },
-      { url: `${baseUrl}/si-pni-web/faces/inicio.jsf`, method: 'POST', needsBasic: true }, // Tentativa com básico
+      // Endpoints SIPNI conhecidos
+      { base: 'https://sipni.datasus.gov.br/si-pni-web/rest', paths: ['/autenticacao/autenticar', '/auth/login', '/login'] },
+      { base: 'https://sipni.datasus.gov.br/api', paths: ['/auth/login', '/login', '/autenticacao'] },
+      { base: 'https://sipni.datasus.gov.br', paths: ['/si-pni-web/rest/autenticacao', '/rest/auth/login', '/api/login'] },
     ];
 
     let lastError = null;
 
-    for (const authConfig of authEndpoints) {
-      try {
-        const headers = {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Sitenovo-Bot/1.0',
-          'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'pt-BR,pt;q=0.9',
-        };
+    for (const authEndpoint of authEndpoints) {
+      for (const path of authEndpoint.paths) {
+        try {
+          const url = `${authEndpoint.base}${path}`;
+          
+          const headers = {
+            'User-Agent': 'Sitenovo-Bot/1.0',
+            'Accept': 'application/json, text/html',
+            'Accept-Language': 'pt-BR,pt;q=0.9',
+          };
 
-        if (authConfig.needsBasic) {
-          headers['Authorization'] = `Basic ${credentials}`;
-        }
+          let body = `usuario=${encodeURIComponent(SIPNI_CONFIG.user)}&senha=${encodeURIComponent(SIPNI_CONFIG.pass)}`;
+          headers['Content-Type'] = 'application/x-www-form-urlencoded';
 
-        // Prepara o body - tenta diferentes formatos
-        let body;
-        if (authConfig.url.includes('login') && !authConfig.needsBasic) {
-          // Formato JSON
-          body = JSON.stringify({
-            usuario: SIPNI_CONFIG.user,
-            senha: SIPNI_CONFIG.pass,
-            username: SIPNI_CONFIG.user,
-            password: SIPNI_CONFIG.pass
-          });
-          headers['Content-Type'] = 'application/json';
-        } else {
-          // Formato URL-encoded (para login com cookies)
-          body = `usuario=${encodeURIComponent(SIPNI_CONFIG.user)}&senha=${encodeURIComponent(SIPNI_CONFIG.pass)}`;
-        }
+          const response = await fetch(url, {
+            method: 'POST',
+            headers,
+            body,
+            timeout: 5000,
+            redirect: 'follow'
+          }).catch(() => null);
 
-        const response = await fetch(authConfig.url, {
-          method: authConfig.method,
-          headers,
-          body,
-          timeout: SIPNI_CONFIG.timeout,
-          redirect: 'follow' // Segue redirecionamentos
-        });
+          if (!response) continue;
 
-        // Extrai cookies da resposta
-        const setCookieHeaders = response.headers.get('set-cookie');
-        if (setCookieHeaders) {
-          sipniCookies = setCookieHeaders;
-          console.log('✅ [SIPNI] Cookies obtidos');
-        }
-
-        if (response.ok) {
-          const result = await response.json().catch(() => ({}));
-
-          if (result.token || result.sessionId || result.access_token) {
-            sipniSession = result.token || result.sessionId || result.access_token;
-            sipniSessionExpiry = Date.now() + (29 * 60 * 1000);
-            console.log('✅ [SIPNI] Autenticado com token');
-            return sipniSession;
-          } else if (sipniCookies) {
-            sipniSessionExpiry = Date.now() + (29 * 60 * 1000);
-            console.log('✅ [SIPNI] Autenticado com cookies');
-            return 'cookies';
+          // Extrai cookies da resposta
+          const setCookieHeaders = response.headers.get('set-cookie');
+          if (setCookieHeaders) {
+            sipniCookies = setCookieHeaders;
+            console.log(`✅ [SIPNI] Cookies obtidos de ${url}`);
           }
-        }
 
-        lastError = `Status ${response.status}`;
-      } catch (e) {
-        lastError = e.message;
+          if (response.ok) {
+            let result = {};
+            try {
+              result = await response.json();
+            } catch (e) {
+              // Pode não ser JSON
+            }
+
+            if (result.token || result.sessionId || result.access_token) {
+              sipniSession = result.token || result.sessionId || result.access_token;
+              sipniSessionExpiry = Date.now() + (29 * 60 * 1000);
+              console.log(`✅ [SIPNI] Autenticado com token via ${url}`);
+              return sipniSession;
+            }
+          }
+        } catch (e) {
+          lastError = e.message;
+        }
       }
     }
 
-    throw new Error(`Nenhum endpoint de autenticação funcionou: ${lastError}`);
+    console.warn(`⚠️ [SIPNI] Autenticação falhou (último erro: ${lastError}), usando fallback mock`);
+    // Não lança erro - apenas retorna null para usar mock
+    return null;
   } catch (error) {
-    console.error('❌ [SIPNI] Falha na autenticação:', error.message);
-    sipniSession = null;
-    sipniCookies = '';
-    sipniAvailable = false;
+    console.error('❌ [SIPNI] Erro em authenticateSIPNI:', error.message);
     return null;
   }
 }
