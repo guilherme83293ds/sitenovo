@@ -303,6 +303,42 @@ osintgramRouter(app);
 import subkillerRouter from './subkiller-runner.js';
 subkillerRouter(app);
 
+import { formatText } from './hudsonrock-api.js';
+
+app.post('/api/hudsonrock', async (req, res) => {
+  try {
+    const { type, value } = req.body || {};
+    if (!type || !value) {
+      return res.status(400).json({ error: 'Parâmetros type e value são obrigatórios' });
+    }
+    if (!['email', 'username'].includes(type)) {
+      return res.status(400).json({ error: 'Type deve ser "email" ou "username"' });
+    }
+    const result = await formatText(type, value);
+    res.json({ success: true, type, value, result });
+  } catch (err) {
+    console.error('[HUDSONROCK API ERROR]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/hudsonrock', async (req, res) => {
+  try {
+    const { type = 'email', value = '' } = req.query;
+    if (!type || !value) {
+      return res.status(400).json({ error: 'Parâmetros type e value são obrigatórios' });
+    }
+    if (!['email', 'username'].includes(type)) {
+      return res.status(400).json({ error: 'Type deve ser "email" ou "username"' });
+    }
+    const result = await formatText(type, value);
+    res.json({ success: true, type, value, result });
+  } catch (err) {
+    console.error('[HUDSONROCK API ERROR]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.use((req, res, next) => {
   const start = Date.now();
   res.on('finish', () => {
