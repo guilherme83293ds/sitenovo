@@ -569,20 +569,6 @@ const pendingBoleto = new Map(); // chatId -> { planIdx, plan }
 const pendingSearch = new Map(); // `${chatId}_${userId}` -> fieldName
 const pendingConsulta = new Map(); // `${chatId}_${userId}` -> apiKey
 
-// ──────────────────────────────────────────────────────
-// MAPEAMENTO DE CONSULTAS SIPNI (PUXAR DADOS)
-// ──────────────────────────────────────────────────────
-const SIPNI_CONSULTAS = {
-  cpf:      { name: '🔢 CPF',           param: 'cpf',    endpoint: 'consulta/cpf' },
-  nome:     { name: '👤 Nome',          param: 'nome',   endpoint: 'consulta/nome' },
-  mae:      { name: '👩 Nome da Mãe',  param: 'mae',    endpoint: 'consulta/mae' },
-  pai:      { name: '👨 Nome do Pai',  param: 'pai',    endpoint: 'consulta/pai' },
-  rg:       { name: '🆔 RG',            param: 'rg',     endpoint: 'consulta/rg' },
-  tel:      { name: '📞 Telefone',      param: 'tel',    endpoint: 'consulta/tel' },
-  sit_cpf:  { name: '✅ Situação CPF',  param: 'cpf',    endpoint: 'consulta/situacao' },
-  titulo:   { name: '🗳️ Título Eleitor', param: 'titulo', endpoint: 'consulta/titulo' }
-};
-
 // ── Nossa própria API de consulta (cache local no Railway) ──
 const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3001}`;
 const CONSULTA_APIS = {
@@ -3379,94 +3365,7 @@ export function setupBot(app, pool, writePool, publicPool) {
         const value = text.trim();
         if (!value || value.length < 2) return bot.sendMessage(chatId, `❌ Valor inválido.`, opts());
         
-        // Verifica se é uma consulta SIPNI
-        if (SIPNI_CONSULTAS[pendingConsultaKey]) {
-          const sipniQuery = SIPNI_CONSULTAS[pendingConsultaKey];
-          bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
-          
-          try {
-            // Usa a API local em vez de chamar SIPNI diretamente
-            const apiResponse = await fetch(`${BASE_URL}/api/sipni/consulta`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                tipo: pendingConsultaKey,
-                valor: value
-              })
-            });
-            
-            if (!apiResponse.ok) {
-              return bot.sendMessage(chatId, `❌ Erro na API: ${apiResponse.status}`, opts());
-            }
-            
-            const result = await apiResponse.json();
-            
-            if (result.error) {
-              return bot.sendMessage(chatId, `❌ ${result.error}`, opts());
-            }
-            
-            const dados = result.resultado;
-            if (!dados || (dados.error)) {
-              return bot.sendMessage(chatId, `❌ ${dados?.error || 'Nenhum dado encontrado'}`, opts());
-            }
-            
-            let msg = `🏥 *${sipniQuery.name}*\n\n`;
-            msg += `🔍 \`${value}\`\n\n`;
-            if (dados.nome) msg += `👤 *Nome:* ${dados.nome}\n`;
-            if (dados.cpf) msg += `🔢 *CPF:* ${dados.cpf}\n`;
-            if (dados.sexo) msg += `⚤ *Sexo:* ${dados.sexo}\n`;
-            if (dados.dataNascimento) msg += `🎂 *Nasc:* ${dados.dataNascimento}\n`;
-            if (dados.nomeMae) msg += `👩 *Mãe:* ${dados.nomeMae}\n`;
-            if (dados.nomePai) msg += `👨 *Pai:* ${dados.nomePai}\n`;
-            if (dados.rg) msg += `🆔 *RG:* ${dados.rg}${dados.orgaoEmissor ? ` (${dados.orgaoEmissor}${dados.ufEmissao ? '/'+dados.ufEmissao : ''})` : ''}\n`;
-            if (dados.tituloEleitor) msg += `🗳️ *Título:* ${dados.tituloEleitor}\n`;
-            if (dados.estCivil) msg += `💍 *EstCivil:* ${dados.estCivil}\n`;
-            if (dados.renda) msg += `💰 *Renda:* R$ ${dados.renda}\n`;
-            if (dados.cbo) msg += `💼 *CBO:* ${dados.cbo}\n`;
-            if (dados.situacao) msg += `✅ *Situação:* ${dados.situacao}\n`;
-            if (dados.situacaoCadastro) msg += `📋 *SitCad:* ${dados.situacaoCadastro}\n`;
-            if (dados.obito) msg += `💀 *Óbito*\n`;
-            
-            if (dados.telefones && dados.telefones.length > 0) {
-              const phones = dados.telefones.slice(0, 5).map(t => {
-                const ddd = t.DDD || '';
-                const num = t.TELEFONE || t.telefone || '';
-                return ddd ? `(${ddd}) ${num}` : num;
-              }).join(', ');
-              msg += `📞 *Telefones:* ${phones}${dados.telefones.length > 5 ? ` (+${dados.telefones.length-5})` : ''}\n`;
-            }
-            if (dados.emails && dados.emails.length > 0) {
-              msg += `✉️ *Emails:* ${dados.emails.slice(0, 3).map(e => e.EMAIL || e.email || e).join(', ')}${dados.emails.length > 3 ? ` (+${dados.emails.length-3})` : ''}\n`;
-            }
-            if (dados.enderecos && dados.enderecos.length > 0) {
-              const addr = dados.enderecos[0];
-              if (addr) {
-                let addrStr = `${addr.LOGR_NOME || ''}, ${addr.LOGR_NUMERO || ''}`;
-                if (addr.BAIRRO) addrStr += ` - ${addr.BAIRRO}`;
-                if (addr.CIDADE) addrStr += `, ${addr.CIDADE}`;
-                if (addr.UF) addrStr += `/${addr.UF}`;
-                if (addr.CEP) addrStr += ` (${addr.CEP})`;
-                msg += `📍 *End:* ${addrStr}\n`;
-                if (dados.enderecos.length > 1) msg += `   _+${dados.enderecos.length-1} endereços_\n`;
-              }
-            }
-            if (dados.score && dados.score.length > 0) {
-              const s = dados.score[0];
-              if (s.CSB8) msg += `📊 *Score:* ${s.CSB8} (${s.CSB8_FAIXA})\n`;
-            }
-            
-            if (msg === `🏥 *${sipniQuery.name}*\n\n🔍 \`${value}\`\n\n`) {
-              msg = `🏥 *${sipniQuery.name}*\n\n🔍 \`${value}\`\n\n_Dados encontrados, mas sem campos formatáveis._\n\`\`\`json\n${JSON.stringify(dados).substring(0, 500)}\n\`\`\``;
-            }
-            
-            return bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown' }));
-          } catch (e) {
-            console.error(`Erro ao consultar SIPNI ${pendingConsultaKey}:`, e.message);
-            return bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
-          }
-        }
-        
-        // Tratamento original para APIs locais
+        // Tratamento para APIs locais
         bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
         const cacheKey = `${pendingConsultaKey}:${value}`;
         const cached = consultaCache[cacheKey];
@@ -4244,39 +4143,6 @@ export function setupBot(app, pool, writePool, publicPool) {
       return bot.sendMessage(chatId,
         `📸 *Puxar Foto do Portal SISP*\n\nEnvie o *CPF* para buscar a foto:\n\n` +
         `_Exemplo: \`03140433735\`_\n\n` + extraText,
-        opts({ parse_mode: 'Markdown', reply_markup: replyMarkup })
-      );
-    }
-
-    // Botão de consulta externa — pergunta o valor
-    if (data.startsWith('consultar_')) {
-      const apiKey = data.substring(10);
-      const sipniQuery = SIPNI_CONSULTAS[apiKey];
-      if (!sipniQuery) return;
-      
-      bot.answerCallbackQuery(callbackQuery.id, { text: `Digite o ${sipniQuery.param}...` }).catch(() => {});
-      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      pendingConsulta.set(userKey, apiKey);
-      
-      const replyMarkup = cbIsGroup
-        ? { force_reply: true, selective: true }
-        : { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] };
-      const extraText = cbIsGroup ? `_Responda a esta mensagem com o valor ou digite:_ \`/consulta ${apiKey} valor\`` : `_Ou clique no botão abaixo para sair._`;
-
-      const examples = {
-        cpf: '12345678901',
-        nome: 'João Silva',
-        mae: 'Maria Silva',
-        pai: 'José Silva',
-        rg: '123456789',
-        tel: '11999999999',
-        sit_cpf: '12345678901',
-        titulo: '026391180205'
-      };
-
-      return bot.sendMessage(chatId,
-        `${sipniQuery.name} *- Consulta de Dados*\n\nEnvie o *${sipniQuery.param}* para consultar:\n\n` +
-        `_Exemplo: \`${examples[apiKey] || 'valor'}\`_\n\n` + extraText,
         opts({ parse_mode: 'Markdown', reply_markup: replyMarkup })
       );
     }
