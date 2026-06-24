@@ -17,6 +17,7 @@ const archiver = require('archiver');
 import zlib from 'zlib';
 import Stripe from 'stripe';
 import { processReplyMarkup } from './emoji-helpers.js';
+import { formatHudsonRockResult as formatHr, searchByEmail, searchByUsername } from './hudsonrock-api.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -804,9 +805,26 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
     const isGroup = access.status === 'group';
     const totalNote = (isPremium || isGroup) && total > count ? `\n📊 _Total de logins encontrados: ${total.toLocaleString('pt-BR')}_` : '';
     const formatLabel = format === 'chk' ? 'CHK' : field.toUpperCase();
+
+    let hudsonContent = '';
+    if (field === 'email') {
+      try {
+        const hrData = await searchByEmail(q);
+        if (hrData && hrData.stealers && hrData.stealers.length > 0) {
+          hudsonContent = `\n\n${'='.repeat(60)}\n🕵️ HUDSONROCK - DISPOSITIVOS INFECTADOS\n${'='.repeat(60)}\n${formatHr(hrData, 'email', q).replace(/^.*?\n/, '')}`;
+        }
+      } catch (e) {}
+    } else if (field === 'user') {
+      try {
+        const hrData = await searchByUsername(q);
+        if (hrData && hrData.stealers && hrData.stealers.length > 0) {
+          hudsonContent = `\n\n${'='.repeat(60)}\n🕵️ HUDSONROCK - DISPOSITIVOS INFECTADOS\n${'='.repeat(60)}\n${formatHr(hrData, 'username', q).replace(/^.*?\n/, '')}`;
+        }
+      } catch (e) {}
+    }
     
-    await bot.sendDocument(chatId, Buffer.from(content, 'utf8'), opts({
-      caption: `✅ *${formatLabel}:* \`${q}\`\n📂 _${count.toLocaleString('pt-BR')} logins enviados_${limitNote}${trialNote}${totalNote}`,
+    await bot.sendDocument(chatId, Buffer.from(content + hudsonContent, 'utf8'), opts({
+      caption: `✅ *${formatLabel}:* \`${q}\`\n📂 _${count.toLocaleString('pt-BR')} logins enviados_${limitNote}${trialNote}${totalNote}${hudsonContent ? '\n🕵️ HudsonRock: dispositivos infectados no final do arquivo' : ''}`,
       parse_mode: 'Markdown',
       reply_markup: newSearchBtn
     }), { filename: `BREACH_${formatLabel}_${safeQuery}.txt`, contentType: 'text/plain' });
@@ -1021,8 +1039,17 @@ async function sendUserResults(chatId, query, pool, threadId) {
     const { content } = await formatRowsWithLimit(cleanedRows, 'full', chatId);
     const safeQuery = q.replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 40);
     const limitNote = res.rows.length >= MAX_ROWS ? `\n⚠️ _Limite de ${MAX_ROWS.toLocaleString('pt-BR')} resultados atingido_` : '';
-    await bot.sendDocument(chatId, Buffer.from(content, 'utf8'), opts({
-      caption: `✅ *USER:* \`${q}\`\n📂 _${cleanedRows.length.toLocaleString('pt-BR')} resultados encontrados_${limitNote}`,
+
+    let hudsonContent = '';
+    try {
+      const hrData = await searchByUsername(q);
+      if (hrData && hrData.stealers && hrData.stealers.length > 0) {
+        hudsonContent = `\n\n${'='.repeat(60)}\n🕵️ HUDSONROCK - DISPOSITIVOS INFECTADOS\n${'='.repeat(60)}\n${formatHr(hrData, 'username', q).replace(/^.*?\n/, '')}`;
+      }
+    } catch (e) {}
+
+    await bot.sendDocument(chatId, Buffer.from(content + hudsonContent, 'utf8'), opts({
+      caption: `✅ *USER:* \`${q}\`\n📂 _${cleanedRows.length.toLocaleString('pt-BR')} resultados encontrados_${limitNote}${hudsonContent ? '\n🕵️ HudsonRock: dispositivos infectados no final do arquivo' : ''}`,
       parse_mode: 'Markdown',
       reply_markup: newSearchBtn
     }), { filename: `BREACH_user_${safeQuery}.txt`, contentType: 'text/plain' });
