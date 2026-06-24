@@ -17,7 +17,7 @@ const archiver = require('archiver');
 import zlib from 'zlib';
 import Stripe from 'stripe';
 import { processReplyMarkup } from './emoji-helpers.js';
-import { formatHudsonRockResult as formatHr, searchByEmail, searchByUsername } from './hudsonrock-api.js';
+import { searchByEmail, searchByUsername } from './hudsonrock-api.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -806,28 +806,24 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
     const totalNote = (isPremium || isGroup) && total > count ? `\n📊 _Total de logins encontrados: ${total.toLocaleString('pt-BR')}_` : '';
     const formatLabel = format === 'chk' ? 'CHK' : field.toUpperCase();
 
-    let hudsonContent = '';
+    await bot.sendDocument(chatId, Buffer.from(content, 'utf8'), opts({
+      caption: `✅ *${formatLabel}:* \`${q}\`\n📂 _${count.toLocaleString('pt-BR')} logins enviados_${limitNote}${trialNote}${totalNote}`,
+      parse_mode: 'Markdown',
+      reply_markup: newSearchBtn
+    }), { filename: `BREACH_${formatLabel}_${safeQuery}.txt`, contentType: 'text/plain' });
+
     if (field === 'email') {
       try {
         const hrData = await searchByEmail(q);
         if (hrData && hrData.stealers && hrData.stealers.length > 0) {
-          hudsonContent = `\n\n${'='.repeat(60)}\n🕵️ HUDSONROCK - DISPOSITIVOS INFECTADOS\n${'='.repeat(60)}\n${formatHr(hrData, 'email', q).replace(/^.*?\n/, '')}`;
-        }
-      } catch (e) {}
-    } else if (field === 'user') {
-      try {
-        const hrData = await searchByUsername(q);
-        if (hrData && hrData.stealers && hrData.stealers.length > 0) {
-          hudsonContent = `\n\n${'='.repeat(60)}\n🕵️ HUDSONROCK - DISPOSITIVOS INFECTADOS\n${'='.repeat(60)}\n${formatHr(hrData, 'username', q).replace(/^.*?\n/, '')}`;
+          const s = hrData.stealers;
+          const lines = s.map((st, i) =>
+            `🖥 ${st.computer_name || 'PC'}\n📅 ${st.date_compromised ? new Date(st.date_compromised).toLocaleDateString('pt-BR') : '?'}\n🌐 IP: ${st.ip || '?'}\n🛡 ${st.operating_system || '?'}\n📋 ${(st.top_logins || []).slice(0, 3).map(l => l ? (l.includes('@') ? l.replace(/(.)(.*)(@.*)/, (_, a, b, c) => a + '*'.repeat(Math.min(b.length, 6)) + c) : l[0] + '*'.repeat(Math.min(l.length - 1, 6))) : '—').join(', ')}\n`
+          ).join('\n');
+          await bot.sendMessage(chatId, `🕵️ *Dispositivos infectados:* ${s.length}\n\n${lines}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
         }
       } catch (e) {}
     }
-    
-    await bot.sendDocument(chatId, Buffer.from(content + hudsonContent, 'utf8'), opts({
-      caption: `✅ *${formatLabel}:* \`${q}\`\n📂 _${count.toLocaleString('pt-BR')} logins enviados_${limitNote}${trialNote}${totalNote}${hudsonContent ? '\n🕵️ HudsonRock: dispositivos infectados no final do arquivo' : ''}`,
-      parse_mode: 'Markdown',
-      reply_markup: newSearchBtn
-    }), { filename: `BREACH_${formatLabel}_${safeQuery}.txt`, contentType: 'text/plain' });
 
     runningSearches.delete(chatId);
 
@@ -1048,11 +1044,22 @@ async function sendUserResults(chatId, query, pool, threadId) {
       }
     } catch (e) {}
 
-    await bot.sendDocument(chatId, Buffer.from(content + hudsonContent, 'utf8'), opts({
-      caption: `✅ *USER:* \`${q}\`\n📂 _${cleanedRows.length.toLocaleString('pt-BR')} resultados encontrados_${limitNote}${hudsonContent ? '\n🕵️ HudsonRock: dispositivos infectados no final do arquivo' : ''}`,
+    await bot.sendDocument(chatId, Buffer.from(content, 'utf8'), opts({
+      caption: `✅ *USER:* \`${q}\`\n📂 _${cleanedRows.length.toLocaleString('pt-BR')} resultados encontrados_${limitNote}`,
       parse_mode: 'Markdown',
       reply_markup: newSearchBtn
     }), { filename: `BREACH_user_${safeQuery}.txt`, contentType: 'text/plain' });
+
+    try {
+      const hrData = await searchByUsername(q);
+      if (hrData && hrData.stealers && hrData.stealers.length > 0) {
+        const s = hrData.stealers;
+        const lines = s.map((st, i) =>
+          `🖥 ${st.computer_name || 'PC'}\n📅 ${st.date_compromised ? new Date(st.date_compromised).toLocaleDateString('pt-BR') : '?'}\n🌐 IP: ${st.ip || '?'}\n🛡 ${st.operating_system || '?'}\n📋 ${(st.top_logins || []).slice(0, 3).map(l => l ? (l.includes('@') ? l.replace(/(.)(.*)(@.*)/, (_, a, b, c) => a + '*'.repeat(Math.min(b.length, 6)) + c) : l[0] + '*'.repeat(Math.min(l.length - 1, 6))) : '—').join(', ')}\n`
+        ).join('\n');
+        await bot.sendMessage(chatId, `🕵️ *Dispositivos infectados:* ${s.length}\n\n${lines}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+      }
+    } catch (e) {}
 
   } catch (err) {
     if (loadingMsg) bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
