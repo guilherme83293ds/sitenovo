@@ -747,7 +747,27 @@ const groupOwners = new Map(); // chatId -> userId do owner/admin
 // Set para controlar stop do checker
 const checkerStopSet = new Set();
 const monitoringStates = new Map(); // chatId -> { type: 'email'|'username' }
+const dailySearchCounts = new Map(); // chatId -> { date: 'YYYY-MM-DD', count: 0 }
 
+function getDailyLimit(plan) {
+  const limits = { STARTER: 15, PREMIUM: 50, VIP: 200, ECONOMIC: 50, ADVANCED: 100, ULTRA: 500, ELITE: Infinity };
+  return limits[plan] || Infinity;
+}
+
+function getRemainingSearches(chatId, plan) {
+  const limit = getDailyLimit(plan);
+  if (limit === Infinity) return { remaining: Infinity, resetIn: null };
+  const today = new Date().toISOString().split('T')[0];
+  const entry = dailySearchCounts.get(chatId);
+  let used = 0;
+  if (entry && entry.date === today) used = entry.count;
+  const remaining = Math.max(0, limit - used);
+  const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
+  const msLeft = endOfDay - Date.now();
+  const hours = Math.floor(msLeft / 3600000);
+  const mins = Math.floor((msLeft % 3600000) / 60000);
+  return { remaining, resetIn: `${hours}h ${mins}min` };
+}
 
 // ══════════════════════════════════════════════════
 // FORMATA RESULTADOS COM LIMITE DE TRIAL
@@ -3266,6 +3286,13 @@ const mainMenuButtons = [
           await registerTrial(chatId);
           await incrementTrialSearch(chatId);
         }
+        if (access.status === 'premium' || access.status === 'free') {
+          const today = new Date().toISOString().split('T')[0];
+          const entry = dailySearchCounts.get(chatId) || { date: today, count: 0 };
+          if (entry.date !== today) { entry.date = today; entry.count = 0; }
+          entry.count++;
+          dailySearchCounts.set(chatId, entry);
+        }
       }
 
       if (command === '/url' || command === '/inurl' || command === '/pesquisar' || command === '/search') {
@@ -4665,8 +4692,22 @@ const mainMenuButtons = [
     if (data === 'show_plans') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      let userStatus = '';
+      try {
+        const user = await _writePool.query(`SELECT plan, expires_at FROM user_sessions WHERE telegram_id = $1 ORDER BY CASE WHEN plan = 'FREE' THEN 1 ELSE 0 END, id DESC LIMIT 1`, [chatId]);
+        if (user.rows.length > 0) {
+          const plan = user.rows[0].plan;
+          const exp = user.rows[0].expires_at;
+          const { remaining, resetIn } = getRemainingSearches(chatId, plan);
+          const remainingText = remaining === Infinity ? '♾️ Ilimitadas' : `🔍 ${remaining} restantes`;
+          const resetText = resetIn ? ` · ⏳ Renova em ${resetIn}` : '';
+          const expText = exp ? ` · 📅 Expira ${new Date(exp).toLocaleDateString('pt-BR')}` : '';
+          userStatus = `📋 *Seu plano:* ${plan}\n${remainingText}${resetText}${expText}\n\n━━━━━━━━━━━━━━━━━━━━\n\n`;
+        }
+      } catch (e) {}
       const plansText =
         `💎 *PLANOS DISPONÍVEIS*\n\n` +
+        userStatus +
         `🚀 *STARTER* · R\$ 4,12\n` +
         `   ⏳ 7 dias · 🔍 15/dia · 📄 250\n\n` +
         `⭐ *PREMIUM* · R\$ 8,20\n` +
