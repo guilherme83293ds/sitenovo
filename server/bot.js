@@ -146,31 +146,43 @@ async function checkUserAccess(telegramId, isGroupOwnerFlag = false) {
     const cached = getCachedAccess(telegramId);
     if (cached) return cached;
 
-    // 1. Verifica se tem sessão ativa (multi-dispositivo)
-    // Prioriza planos pagos sobre FREE (ordena: não-FREE primeiro, depois o mais recente)
-    const sessRes = await _writePool.query(
-      `SELECT s.expires_at, s.plan FROM user_sessions s
-       WHERE s.telegram_id = $1
-       ORDER BY CASE WHEN s.plan = 'FREE' THEN 1 ELSE 0 END, s.id DESC
-       LIMIT 1`,
-      [telegramId]
-    );
-    if (sessRes.rows.length > 0) {
-      const expiresAt = sessRes.rows[0].expires_at;
-      if (expiresAt && new Date(expiresAt) < new Date()) {
-        // Sessão expirada
-      } else {
-        const plan = sessRes.rows[0].plan || 'FREE';
-        if (plan === 'FREE') {
-          const result = { status: 'free', searchesLeft: 999999, plan: 'FREE', expiresAt: null };
-          setCachedAccess(telegramId, result);
-          return result;
-        }
-        const result = { status: 'premium', searchesLeft: Infinity, expiresAt, plan };
-        setCachedAccess(telegramId, result);
-        return result;
-      }
+// 1. Verifica se tem sessão ativa (multi-dispositivo)
+// Prioriza planos pagos sobre FREE (ordena: não-FREE primeiro, depois o mais recente)
+let sessRes;
+try {
+  sessRes = await _writePool.query(
+    `SELECT s.expires_at, s.plan FROM user_sessions s
+     WHERE s.telegram_id = $1
+     ORDER BY CASE WHEN s.plan = 'FREE' THEN 1 ELSE 0 END, s.id DESC
+     LIMIT 1`,
+    [telegramId]
+  );
+} catch (err) {
+  // If user_sessions table doesn't exist, set empty result to fall back to legacy logic
+  if (err.code === '42P01' || err.message?.includes('does not exist') || err.message?.includes('undefined_table')) {
+    sessRes = { rows: [] }; // Empty result will trigger fallback
+  } else {
+    // Re-throw other errors to be caught by outer handler
+    throw err;
+  }
+}
+
+if (sessRes.rows.length > 0) {
+  const expiresAt = sessRes.rows[0].expires_at;
+  if (expiresAt && new Date(expiresAt) < new Date()) {
+    // Sessão expirada
+  } else {
+    const plan = sessRes.rows[0].plan || 'FREE';
+    if (plan === 'FREE') {
+      const result = { status: 'free', searchesLeft: 999999, plan: 'FREE', expiresAt: null };
+      setCachedAccess(telegramId, result);
+      return result;
     }
+    const result = { status: 'premium', searchesLeft: Infinity, expiresAt, plan };
+    setCachedAccess(telegramId, result);
+    return result;
+  }
+}
 
     // 1b. Fallback: verifica license_keys antiga (pré-sessões) e cria sessão automaticamente
     const oldRes = await _writePool.query(
@@ -1931,23 +1943,31 @@ export function setupBot(app, pool, writePool, publicPool) {
 
 
 
-  // Cria tabela de sessões se não existir
-  _writePool.query(`
-    CREATE TABLE IF NOT EXISTS user_sessions (
-      id SERIAL PRIMARY KEY,
-      telegram_id BIGINT NOT NULL,
-      key TEXT NOT NULL,
-      plan TEXT,
-      activated_at TIMESTAMPTZ DEFAULT NOW(),
-      expires_at TIMESTAMPTZ
-    )
-  `).catch(() => {});
-  _writePool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_tg ON user_sessions(telegram_id)`).catch(() => {});
+// Cria tabela de sessões se não existir
+   await _writePool.query(`
+     CREATE TABLE IF NOT EXISTS user_sessions (
+       id SERIAL PRIMARY KEY,
+       telegram_id BIGINT NOT NULL,
+       key TEXT NOT NULL,
+       plan TEXT,
+       activated_at TIMESTAMPTZ DEFAULT NOW(),
+       expires_at TIMESTAMPTZ
+     )
+   `).catch(err => {
+     console.warn('⚠️ [BOT] Falha ao criar tabela user_sessions:', err.message);
+   });
+   await _writePool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_tg ON user_sessions(telegram_id)`).catch(err => {
+     console.warn('⚠️ [BOT] Falha ao criar índice idx_sessions_tg:', err.message);
+   });
 
-  // Migração: adiciona coluna last_reset na tabela bot_trials
-  _writePool.query(`ALTER TABLE bot_trials ADD COLUMN IF NOT EXISTS last_reset TIMESTAMPTZ DEFAULT NOW()`).catch(() => {});
-  // Migração: adiciona coluna max_results na tabela users
-  _writePool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS max_results INT DEFAULT 100`).catch(() => {});
+// Migração: adiciona coluna last_reset na tabela bot_trials
+   await _writePool.query(`ALTER TABLE bot_trials ADD COLUMN IF NOT EXISTS last_reset TIMESTAMPTZ DEFAULT NOW()`).catch(err => {
+     console.warn('⚠️ [BOT] Falha ao adicionar coluna last_reset na tabela bot_trials:', err.message);
+   });
+   // Migração: adiciona coluna max_results na tabela users
+   await _writePool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS max_results INT DEFAULT 100`).catch(err => {
+     console.warn('⚠️ [BOT] Falha ao adicionar coluna max_results na tabela users:', err.message);
+   });
 
   // Cria o bot AQUI (não no nível do módulo) para evitar dupla polling
   bot = new TelegramBot(TOKEN, { polling: { interval: 300, autoStart: true, params: { timeout: 5 } } });
