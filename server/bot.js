@@ -3072,16 +3072,20 @@ const mainMenuButtons = [
             days = 7;
             validSeconds = days * 86400;
             planLabel = '🔹 ADVANCED';
-          } else if (plan === 'ultra') {
+          } else if (plan === 'ultra15') {
             days = 15;
             validSeconds = days * 86400;
-            planLabel = '🔹 ULTRA';
+            planLabel = '🔹 ULTRA 15D';
+          } else if (plan === 'ultra30' || plan === 'ultra') {
+            days = 30;
+            validSeconds = days * 86400;
+            planLabel = '🔹 ULTRA 30D';
           } else if (plan === 'elite') {
             validSeconds = null;
             planLabel = '👑 ELITE';
           } else {
             return bot.sendMessage(chatId,
-              `❌ *Uso:* \`/genkey starter\`, \`/genkey premium\`, \`/genkey vip\`, \`/genkey economic\`, \`/genkey advanced\`, \`/genkey ultra\` ou \`/genkey elite\`\n\n` +
+              `❌ *Uso:* \`/genkey starter\`, \`/genkey premium\`, \`/genkey vip\`, \`/genkey economic\`, \`/genkey advanced\`, \`/genkey ultra15\` (15d) ou \`/genkey ultra30\` (30d) ou \`/genkey elite\`\n\n` +
               `💎 *PLANOS DISPONÍVEIS*\n\n` +
               `🚀 *STARTER* · R\$ 4,12\n` +
               `   ⏳ 7 dias · 🔍 15/dia · 📄 250\n\n` +
@@ -3093,7 +3097,9 @@ const mainMenuButtons = [
               `   ⏳ 1 dia · 🔍 50/dia · 📄 300\n\n` +
               `🔹 *ADVANCED* · R\$ 10,95\n` +
               `   ⏳ 7 dias · 🔍 100/dia · 📄 800\n\n` +
-              `🔹 *ULTRA* · R\$ 19,20\n` +
+              `🔹 *ULTRA 15D* · R\$ 19,20\n` +
+              `   ⏳ 15 dias · 🔍 500/dia · 📄 5000\n\n` +
+              `🔹 *ULTRA 30D* · R\$ 19,20\n` +
               `   ⏳ 30 dias · 🔍 500/dia · 📄 5000\n\n` +
               `👑 *ELITE* · R\$ 82,50\n` +
               `   ♾️ Vitalício · 🔍 Ilimitadas · 📄 50000`,
