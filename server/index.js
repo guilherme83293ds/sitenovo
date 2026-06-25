@@ -140,7 +140,8 @@ async function migrate() {
         `ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN DEFAULT false;`,
         `ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_method TEXT DEFAULT 'authenticator';`,
         `ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_temp_code TEXT;`,
-        `ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_temp_expires TIMESTAMPTZ;`
+        `ALTER TABLE users ADD COLUMN IF NOT EXISTS two_factor_temp_expires TIMESTAMPTZ;`,
+        `ALTER TABLE users ADD COLUMN IF NOT EXISTS max_results INT DEFAULT 100;`
       ];
       for (const q of alterQueries) {
         try { await currentPool.query(q); } catch (e) {}
@@ -2473,14 +2474,6 @@ app.post('/api/copyurl', express.json({ limit: '1mb' }), async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// React Router SPA Catch-all
-if (process.env.NODE_ENV === 'production') {
-  app.get(/.*/, (req, res) => {
-    const __dirname = path.dirname(fileURLToPath(import.meta.url));
-    res.sendFile(path.join(__dirname, '..', 'dist', 'index.html'));
-  });
-}
 
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {

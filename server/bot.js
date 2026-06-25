@@ -11,6 +11,7 @@ import os from 'os';
 import https from 'https';
 import http from 'http';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const archiver = require('archiver');
@@ -18,6 +19,8 @@ import zlib from 'zlib';
 import Stripe from 'stripe';
 import { processReplyMarkup } from './emoji-helpers.js';
 import { searchByEmail, searchByUsername, searchLeakCheck, searchXposedOrNot, searchIntelX, searchLeakLookup, formatHudsonRockResult } from './hudsonrock-api.js';
+import { querySIPNI } from './sipni-api.js';
+import { checkSipniBatch, cancelRun } from './sipni-checker.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -48,6 +51,9 @@ function getCachedAccess(userId) {
 function setCachedAccess(userId, data) {
   userAccessCache.set(userId, { data, cachedAt: Date.now() });
 }
+function clearCachedAccess(userId) {
+  userAccessCache.delete(userId);
+}
 
 
 // ══════════════════════════════════════════════════
@@ -60,6 +66,16 @@ let maintenanceMode = false; // Modo manutenção global
 const TRIAL_MAX_SEARCHES = 999999;
 const TRIAL_MAX_RESULTS = 100;
 const GROUP_MAX_RESULTS = 50;
+
+function getPlanLimit(access) {
+  if (access.status === 'premium' && access.plan) {
+    if (access.plan === 'STARTER') return 5000;
+    if (access.plan === 'PRO') return 20000;
+  }
+  if (access.status === 'premium') return Infinity;
+  if (access.status === 'group') return GROUP_MAX_RESULTS;
+  return TRIAL_MAX_RESULTS;
+}
 const PREMIUM_MAX_ROWS = 100000;
 
 // Grupos permitidos com acesso "group" (consulta infinita, 100 resultados, sem mensagens de key)
@@ -107,9 +123,8 @@ const PLANS = [
 async function getMaxRows(chatId) {
   const inGroup = groupChats.has(chatId);
   const a = await checkUserAccess(chatId, inGroup);
-  if (a.status === 'premium') return PREMIUM_MAX_ROWS;
-  if (a.status === 'group') return GROUP_MAX_RESULTS;
-  return 100;
+  const limit = getPlanLimit(a);
+  return limit === Infinity ? PREMIUM_MAX_ROWS : limit;
 }
 
 // ══════════════════════════════════════════════════
@@ -131,18 +146,65 @@ async function checkUserAccess(telegramId, isGroupOwnerFlag = false) {
     const cached = getCachedAccess(telegramId);
     if (cached) return cached;
 
-    // 1. Verifica se tem license key ativa (não expirada)
-    const keyRes = await _writePool.query(
-      `SELECT id, expires_at FROM license_keys WHERE telegram_id = $1 AND activated_at IS NOT NULL LIMIT 1`,
+    // 1. Verifica se tem sessão ativa (multi-dispositivo)
+    // Prioriza planos pagos sobre FREE (ordena: não-FREE primeiro, depois o mais recente)
+    const sessRes = await _writePool.query(
+      `SELECT s.expires_at, s.plan FROM user_sessions s
+       WHERE s.telegram_id = $1
+       ORDER BY CASE WHEN s.plan = 'FREE' THEN 1 ELSE 0 END, s.id DESC
+       LIMIT 1`,
       [telegramId]
     );
-    if (keyRes.rows.length > 0) {
-      const expiresAt = keyRes.rows[0].expires_at;
-      // Se tem expires_at e já passou, a key expirou
+    if (sessRes.rows.length > 0) {
+      const expiresAt = sessRes.rows[0].expires_at;
       if (expiresAt && new Date(expiresAt) < new Date()) {
-        // Key expirada — cai no trial abaixo
+        // Sessão expirada
       } else {
-        const result = { status: 'premium', searchesLeft: Infinity, expiresAt };
+        const plan = sessRes.rows[0].plan || 'FREE';
+        if (plan === 'FREE') {
+          const result = { status: 'free', searchesLeft: 999999, plan: 'FREE', expiresAt: null };
+          setCachedAccess(telegramId, result);
+          return result;
+        }
+        const result = { status: 'premium', searchesLeft: Infinity, expiresAt, plan };
+        setCachedAccess(telegramId, result);
+        return result;
+      }
+    }
+
+    // 1b. Fallback: verifica license_keys antiga (pré-sessões) e cria sessão automaticamente
+    const oldRes = await _writePool.query(
+      `SELECT id, key, duration_seconds, expires_at FROM license_keys WHERE telegram_id = $1 AND activated_at IS NOT NULL LIMIT 1`,
+      [telegramId]
+    );
+    if (oldRes.rows.length > 0) {
+      const r = oldRes.rows[0];
+      const expiresAt = r.expires_at;
+      if (!expiresAt || new Date(expiresAt) > new Date()) {
+        const durSec = r.duration_seconds;
+        let plan = 'POWER';
+        if (durSec && durSec > 0) {
+          const days = durSec / 86400;
+          plan = days <= 30 ? 'STARTER' : 'PRO';
+        }
+        const existingSess = await _writePool.query(
+          `SELECT id FROM user_sessions WHERE telegram_id = $1 AND key = $2 LIMIT 1`,
+          [telegramId, r.key]
+        );
+        if (existingSess.rows.length === 0) {
+          if (durSec && durSec > 0) {
+            await _writePool.query(
+              `INSERT INTO user_sessions (telegram_id, key, plan, expires_at) VALUES ($1, $2, $3, $4)`,
+              [telegramId, r.key, plan, expiresAt]
+            ).catch(() => {});
+          } else {
+            await _writePool.query(
+              `INSERT INTO user_sessions (telegram_id, key, plan) VALUES ($1, $2, $3)`,
+              [telegramId, r.key, plan]
+            ).catch(() => {});
+          }
+        }
+        const result = { status: 'premium', searchesLeft: Infinity, expiresAt, plan };
         setCachedAccess(telegramId, result);
         return result;
       }
@@ -235,36 +297,64 @@ async function activateKey(telegramId, key) {
   try {
     // Verifica se a key existe e não está ativada
     const res = await _writePool.query(
-      `SELECT id, telegram_id, expires_days, duration_seconds FROM license_keys WHERE key = $1 LIMIT 1`,
+      `SELECT id, duration_seconds, expires_days FROM license_keys WHERE key = $1 LIMIT 1`,
       [key.trim().toUpperCase()]
     );
     if (res.rows.length === 0) {
       return { success: false, message: '❌ *Key Inválida*\n\nVerifique e tente novamente.' };
     }
-    if (res.rows[0].telegram_id) {
-      return { success: false, message: '❌ *Key Já Utilizada*\n\nEsta key já foi ativada por outro usuário.' };
-    }
 
-    // Calcula duração total em segundos (prioriza duration_seconds; fallback para expires_days * 86400)
+    // Calcula duração total em segundos
     const durSec = res.rows[0].duration_seconds != null
       ? Number(res.rows[0].duration_seconds)
       : (res.rows[0].expires_days ? Number(res.rows[0].expires_days) * 86400 : null);
 
-    // Ativa a key com ou sem expiração
+    // Define o nome do plano
+    let plan = 'POWER';
+    if (durSec && durSec > 0) {
+      const days = durSec / 86400;
+      if (days <= 30) plan = 'STARTER';
+      else plan = 'PRO';
+    }
+
+    // Verifica se já tem sessão para este telegram_id com esta key
+    const existing = await _writePool.query(
+      `SELECT id FROM user_sessions WHERE telegram_id = $1 AND key = $2 LIMIT 1`,
+      [telegramId, key.trim().toUpperCase()]
+    );
+    if (existing.rows.length > 0) {
+      return { success: false, message: '⚠️ *Você já está logado com esta key!*\n\nUse /start para acessar o menu.' };
+    }
+
+    // Remove sessões FREE anteriores (evita conflito com sessão premium)
+    await _writePool.query(
+      `DELETE FROM user_sessions WHERE telegram_id = $1 AND plan = 'FREE'`,
+      [telegramId]
+    ).catch(() => {});
+
+    // Atualiza license_keys com telegram_id (para compatibilidade com login email+senha)
+    await _writePool.query(
+      `UPDATE license_keys SET telegram_id = $1, activated_at = COALESCE(activated_at, NOW()) WHERE key = $2`,
+      [telegramId, key.trim().toUpperCase()]
+    ).catch(() => {});
+
+    // Limpa cache de acesso
+    clearCachedAccess(telegramId);
+
+    // Cria sessão (permite mesma key em múltiplos telegram_ids)
     if (durSec && durSec > 0) {
       await _writePool.query(
-        `UPDATE license_keys SET telegram_id = $1, activated_at = now(), expires_at = now() + ($2::bigint || ' seconds')::INTERVAL WHERE key = $3`,
-        [telegramId, durSec, key.trim().toUpperCase()]
+        `INSERT INTO user_sessions (telegram_id, key, plan, expires_at) VALUES ($1, $2, $3, now() + ($4::bigint || ' seconds')::INTERVAL)`,
+        [telegramId, key.trim().toUpperCase(), plan, durSec]
       );
       const label = formatDuration(durSec);
-      return { success: true, message: `✅ *Key Ativada!*\n\n⏳ Válida por *${label}*\nAproveite o acesso premium!` };
+      return { success: true, message: `✅ *Login realizado!*\n\n👤 *Plano:* ${plan}\n⏳ Válido por *${label}*\n\nAproveite o acesso premium!` };
     } else {
       await _writePool.query(
-        `UPDATE license_keys SET telegram_id = $1, activated_at = now() WHERE key = $2`,
-        [telegramId, key.trim().toUpperCase()]
+        `INSERT INTO user_sessions (telegram_id, key, plan) VALUES ($1, $2, $3)`,
+        [telegramId, key.trim().toUpperCase(), plan]
       );
-
-      return { success: true, message: '✅ *Key Vitalícia Ativada!*\n\nAcesso completo ilimitado para sempre!' };
+      return { success: true, message: `✅ *Login realizado!*\n\n👤 *Plano:* ${plan}\n♾️ *Vitalício*\n\nAproveite o acesso premium!` };
     }
   } catch (err) {
     console.error('[ACTIVATE KEY ERROR]', err.message);
@@ -451,6 +541,21 @@ function formatRowChk2(row) {
   return `${url}:${email}:${row.senha || ''}`;
 }
 
+function formatRowJson(row) {
+  return JSON.stringify({
+    url: row.url || '',
+    email: row.email || '',
+    senha: row.senha || '',
+    ip: row.ip || '',
+    data: row.data || ''
+  });
+}
+
+function formatRowCsv(row) {
+  const esc = v => `"${(v || '').replace(/"/g, '""')}"`;
+  return [esc(row.url), esc(row.email), esc(row.senha), esc(row.ip), esc(row.data)].join(',');
+}
+
 // Helper para verificar se um registro possui tanto usuário quanto senha válidos
 function hasUserAndPass(row) {
   let url = row.url || '';
@@ -502,9 +607,9 @@ async function getUniqueValidRows(rows, format, chatId) {
     let senha = row.senha || '';
     let telefone = row.telefone || '';
 
-    // Filtra sites .gov.br (só para não-admin)
-    if (chatId !== ADMIN_ID && url && /\.gov\.br/i.test(url)) continue;
-    if (chatId !== ADMIN_ID && email && /\.gov\.br/i.test(email)) continue;
+    // Filtra sites .gov.br (só para não-premium)
+    if (!isPremium && url && /\.gov\.br/i.test(url)) continue;
+    if (!isPremium && email && /\.gov\.br/i.test(email)) continue;
 
     if (url) {
       let lastSep = -1;
@@ -569,6 +674,8 @@ const pendingBoleto = new Map(); // chatId -> { planIdx, plan }
 const pendingSearch = new Map(); // `${chatId}_${userId}` -> fieldName
 const pendingConsulta = new Map(); // `${chatId}_${userId}` -> apiKey
 const pendingConfig = new Map(); // chatId -> 'api_key' | 'max_results'
+const pendingLogin = new Map();  // chatId -> { email? }
+const pendingRegister = new Map(); // chatId -> { email? }
 
 // ── Nossa própria API de consulta (cache local no Railway) ──
 const BASE_URL = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3001}`;
@@ -581,6 +688,18 @@ const CONSULTA_APIS = {
   cbo:     { name: '💼 Profissão (CBO)',     url: `${BASE_URL}/api/consulta/busca/cbo?q=`,  param: 'cbo' },
   sit_cpf: { name: '✅ Situação CPF',         url: `${BASE_URL}/api/consulta/`,              param: 'cpf', local: true },
   tel:     { name: '📞 Telefone',             url: `${BASE_URL}/api/consulta/busca/tel?q=`,  param: 'TELEFONE' },
+  titulo:  { name: '🗳️ Título Eleitor',      url: `${BASE_URL}/api/consulta/busca/titulo?q=`, param: 'q' },
+};
+
+const SIPNI_CONSULTAS = {
+  cpf:     { endpoint: 'consulta/cpf',      param: 'cpf', name: '🔢 CPF' },
+  nome:    { endpoint: 'consulta/nome',     param: 'nome', name: '👤 Nome' },
+  mae:     { endpoint: 'consulta/mae',      param: 'mae', name: '👩 Nome da Mãe' },
+  pai:     { endpoint: 'consulta/pai',      param: 'pai', name: '👨 Nome do Pai' },
+  rg:      { endpoint: 'consulta/rg',       param: 'rg', name: '🆔 RG' },
+  tel:     { endpoint: 'consulta/tel',      param: 'tel', name: '📞 Telefone' },
+  sit_cpf: { endpoint: 'consulta/situacao', param: 'cpf', name: '✅ Situação CPF' },
+  titulo:  { endpoint: 'consulta/titulo',   param: 'titulo', name: '🗳️ Título Eleitor' },
 };
 
 const CONSULTA_CACHE_PATH = path.join(TMP_DIR, 'consulta_cache.json');
@@ -617,10 +736,10 @@ async function formatRowsWithLimit(rows, format, chatId) {
   const access = await checkUserAccess(chatId, inGroup);
   const isPremium = access.status === 'premium';
   const isGroup = access.status === 'group';
-  const formatter = format === 'chk' ? formatRowChk : format === 'chk2' ? formatRowChk2 : formatRow;
-  const limit = isPremium ? rows.length : (isGroup ? GROUP_MAX_RESULTS : TRIAL_MAX_RESULTS);
+  const formatter = format === 'chk' ? formatRowChk : format === 'chk2' ? formatRowChk2 : format === 'json' ? formatRowJson : format === 'csv' ? formatRowCsv : formatRow;
+  const limit = getPlanLimit(access);
   const limited = rows.slice(0, limit);
-  const content = limited.map(formatter).join('\n');
+  const content = format === 'json' ? '[' + limited.map(formatter).join(',\n') + ']' : format === 'csv' ? 'url,email,senha,ip,data\n' + limited.map(formatter).join('\n') : limited.map(formatter).join('\n');
   return { content, count: limited.length, total: rows.length, limited: rows.length > limit };
 }
 
@@ -767,7 +886,7 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
 
     if (rows.length === 0) {
       const hint = field === 'url'
-        ? `\n\n💡 _Tente sem http:// ex: \`/url site.gov.br\`_`
+        ? `\n\n💡 _Tente sem http:// ex: \`/inurl site.gov.br\`_`
         : !doPartial ? `\n\n💡 _Termo curto: só busca exata._` : '';
       return bot.sendMessage(chatId, `❌ Nenhum resultado para \`${q}\`${hint}`, opts({ parse_mode: 'Markdown', reply_markup: noResultBtn }));
     }
@@ -783,7 +902,7 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
 
     const { content, count, total, limited } = await formatRowsWithLimit(cleanedRows, format, chatId);
     const safeQuery = q.replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 40);
-    const formatTag = format === 'chk' ? 'CHK' : format === 'chk2' ? 'CHK2' : field.toUpperCase();
+    const formatTag = format === 'chk' ? 'CHK' : format === 'chk2' ? 'CHK2' : format === 'json' ? 'JSON' : format === 'csv' ? 'CSV' : field.toUpperCase();
     const inGroup = groupChats.has(chatId);
     const limitNote = rows.length >= MAX_ROWS ? `\n⚠️ _Limite de ${MAX_ROWS.toLocaleString('pt-BR')} resultados atingido_` : '';
     const trialNote = limited ? `\n⚠️ _Modo teste: apenas ${count.toLocaleString('pt-BR')} resultados exibidos_` : '';
@@ -791,13 +910,16 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
     const isPremium = access.status === 'premium';
     const isGroup = access.status === 'group';
     const totalNote = (isPremium || isGroup) && total > count ? `\n📊 _Total de logins encontrados: ${total.toLocaleString('pt-BR')}_` : '';
-    const formatLabel = format === 'chk' ? 'CHK' : field.toUpperCase();
+    const formatLabel = format === 'chk' ? 'CHK' : format === 'json' ? 'JSON' : format === 'csv' ? 'CSV' : field.toUpperCase();
+
+    const fileExt = format === 'json' ? 'json' : format === 'csv' ? 'csv' : 'txt';
+    const contentType = format === 'json' ? 'application/json' : format === 'csv' ? 'text/csv' : 'text/plain';
 
     await bot.sendDocument(chatId, Buffer.from(content, 'utf8'), opts({
       caption: `✅ *${formatLabel}:* \`${q}\`\n📂 _${count.toLocaleString('pt-BR')} logins enviados_${limitNote}${trialNote}${totalNote}`,
       parse_mode: 'Markdown',
       reply_markup: newSearchBtn
-    }), { filename: `BREACH_${formatLabel}_${safeQuery}.txt`, contentType: 'text/plain' });
+    }), { filename: `BREACH_${formatLabel}_${safeQuery}.${fileExt}`, contentType });
 
     if (field === 'email') {
       try {
@@ -1643,9 +1765,7 @@ async function sendSubdomainResults(chatId, query, pool, threadId) {
     // Determina status premium UMA vez (e não a cada subdomínio)
     const inGroup = groupChats.has(chatId);
     const cachedAccess = await checkUserAccess(chatId, inGroup);
-    const isPremium = cachedAccess.status === 'premium';
-    const isGroup = cachedAccess.status === 'group';
-    const rowLimit = isPremium ? 999999 : (isGroup ? GROUP_MAX_RESULTS : TRIAL_MAX_RESULTS);
+    const rowLimit = getPlanLimit(cachedAccess);
     const formatRowFn = (r) => `${r.email}:${r.senha}`;
 
     for (const sub of sortedSubs) {
@@ -1777,7 +1897,7 @@ async function sendCheckDomainResults(chatId, query, pool, threadId) {
       `Senhas: \`${Number(unique_pass).toLocaleString('pt-BR')}\`\n` +
       `Telefones: \`${Number(unique_phones).toLocaleString('pt-BR')}\`` +
       topList +
-      `\n\n_Use \`/url ${q}\` para baixar registros_`,
+      `\n\n_Use \`/inurl ${q}\` para baixar registros_`,
       opts({ parse_mode: 'Markdown' })
     );
 
@@ -1811,8 +1931,23 @@ export function setupBot(app, pool, writePool, publicPool) {
 
 
 
+  // Cria tabela de sessões se não existir
+  _writePool.query(`
+    CREATE TABLE IF NOT EXISTS user_sessions (
+      id SERIAL PRIMARY KEY,
+      telegram_id BIGINT NOT NULL,
+      key TEXT NOT NULL,
+      plan TEXT,
+      activated_at TIMESTAMPTZ DEFAULT NOW(),
+      expires_at TIMESTAMPTZ
+    )
+  `).catch(() => {});
+  _writePool.query(`CREATE INDEX IF NOT EXISTS idx_sessions_tg ON user_sessions(telegram_id)`).catch(() => {});
+
   // Migração: adiciona coluna last_reset na tabela bot_trials
   _writePool.query(`ALTER TABLE bot_trials ADD COLUMN IF NOT EXISTS last_reset TIMESTAMPTZ DEFAULT NOW()`).catch(() => {});
+  // Migração: adiciona coluna max_results na tabela users
+  _writePool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS max_results INT DEFAULT 100`).catch(() => {});
 
   // Cria o bot AQUI (não no nível do módulo) para evitar dupla polling
   bot = new TelegramBot(TOKEN, { polling: { interval: 300, autoStart: true, params: { timeout: 5 } } });
@@ -1842,8 +1977,7 @@ export function setupBot(app, pool, writePool, publicPool) {
     { command: 'login', description: '🔓 LOGIN COM CREDENCIAIS' },
     { command: 'ferramentas', description: '🛠️ FERRAMENTAS DISPONÍVEIS' },
     { command: 'consultardados', description: '🔎 CONSULTAR DADOS AVANÇADO' },
-    { command: 'url', description: '🔗 Buscar por URL' },
-    { command: 'INURL', description: '🔗 Buscar por termo na URL' },
+    { command: 'inurl', description: '🔗 Buscar por termo na URL' },
     { command: 'email', description: '✉️ Buscar por E-mail' },
     { command: 'user', description: '👤 Buscar por Usuário' },
     { command: 'SENHA', description: '🔒 Buscar por Senha' },
@@ -2445,6 +2579,126 @@ export function setupBot(app, pool, writePool, publicPool) {
     }
   }
 
+  // ── SIPNI CHECKER HANDLER ──
+  async function handleSipniCheck(chatId, lines, threadId) {
+    const opts2 = (o = {}) => threadId ? { message_thread_id: threadId, ...o } : o;
+    const total = lines.length;
+
+    const statusMsg = await bot.sendMessage(chatId,
+      `💉 *SIPNI CHECKER*\n\n📂 Logins: \`${total}\`\n⏳ Processando...`,
+      opts2({
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [[{ text: '🛑 PARAR', callback_data: 'cancel_sipni', style: 'primary' }]]
+        }
+      })
+    );
+
+    let liveCount = 0;
+    let dieCount = 0;
+    let errorCount = 0;
+    const liveLogins = [];
+
+    const onProgress = (status, result, done) => {
+      if (status === 'live') { liveCount++; liveLogins.push(result); }
+      else if (status === 'die') dieCount++;
+      else errorCount++;
+
+      if (done % 3 === 0 || done === total) {
+        bot.editMessageText(
+          `💉 *SIPNI CHECKER*\n\n📂 Progresso: \`${done}/${total}\`\n✅ Live: \`${liveCount}\`\n❌ Die: \`${dieCount}\`\n⚠️ Erros: \`${errorCount}\``,
+          {
+            chat_id: chatId,
+            message_id: statusMsg.message_id,
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [[{ text: '🛑 PARAR', callback_data: 'cancel_sipni', style: 'primary' }]]
+            }
+          }
+        ).catch(() => {});
+      }
+    };
+
+    const results = await checkSipniBatch(chatId, lines, onProgress);
+
+    // Final progress update
+    await bot.editMessageText(
+      `💉 *SIPNI CHECKER*\n\n📂 Total: \`${total}\`\n✅ Live: \`${results.live.length}\`\n❌ Die: \`${results.die.length}\`\n⚠️ Erros: \`${results.errors.length}\``,
+      { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+    ).catch(() => {});
+
+    // Send results
+    if (results.live.length > 0) {
+      const liveContent = results.live.map(r => `${r.user}:${r.pass}`).join('\n');
+      await bot.sendDocument(chatId, Buffer.from(liveContent, 'utf8'), opts2({
+        caption: `✅ *APROVADOS: ${results.live.length}*\n\n💉 *SIPNI*`,
+        parse_mode: 'Markdown'
+      }), { filename: 'sipni_aprovados.txt', contentType: 'text/plain' });
+    } else {
+      await bot.sendMessage(chatId, `❌ Nenhum login aprovado encontrado.`, opts2({ parse_mode: 'Markdown' }));
+    }
+
+    // Send die logins as txt if any
+    if (results.die.length > 0) {
+      const dieContent = results.die.map(r => `${r.user}:${r.pass}`).join('\n');
+      await bot.sendDocument(chatId, Buffer.from(dieContent, 'utf8'), opts2({
+        caption: `❌ *REPROVADOS: ${results.die.length}*\n\n💉 *SIPNI*`,
+        parse_mode: 'Markdown'
+      }), { filename: 'sipni_reprovados.txt', contentType: 'text/plain' });
+    }
+
+    return bot.sendMessage(chatId,
+      `💉 *SIPNI CHECKER — CONCLUÍDO*\n\n✅ Aprovados: \`${results.live.length}\`\n❌ Reprovados: \`${results.die.length}\`\n⚠️ Erros: \`${results.errors.length}\``,
+      opts2({
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📋 CHECKERS', callback_data: 'checkers_menu', style: 'primary' }],
+            [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+          ]
+        }
+      })
+    );
+  }
+
+  // ── Função reutilizável: /conta — Gerenciar conta ──
+  async function handleContaCommand(chatId, threadId) {
+    const opts = (o = {}) => threadId ? { message_thread_id: threadId, ...o } : o;
+    try {
+      const user = await _writePool.query(
+        `SELECT s.expires_at, s.plan, s.key FROM user_sessions s WHERE s.telegram_id = $1 ORDER BY CASE WHEN s.plan = 'FREE' THEN 1 ELSE 0 END, s.id DESC LIMIT 1`,
+        [chatId]
+      );
+      const row = user.rows[0];
+      const isActive = row && (!row.expires_at || new Date(row.expires_at) > new Date());
+      const expires = row?.expires_at ? new Date(row.expires_at).toLocaleDateString('pt-BR') : (row ? 'Vitalício' : 'Não ativado');
+      const plan = row?.plan || '—';
+      const key = row?.key || '—';
+      const status = isActive ? '💎 Premium' : '🟢 Free';
+      const maxResults = plan === 'STARTER' ? '5.000' : plan === 'PRO' ? '20.000' : plan === 'POWER' ? 'Ilimitado' : '100';
+      const limitText = plan === 'STARTER' ? '🚀 STARTER — 5.000 resultados, 30 dias' :
+                        plan === 'PRO' ? '⭐ PRO — 20.000 resultados, 30 dias' :
+                        plan === 'POWER' ? '🔥 POWER — Ilimitado, Vitalício' : '🟢 FREE — 100 resultados';
+      const planTable =
+        `🚀 *STARTER* — 5.000 resultados, 30 dias\n` +
+        `⭐ *PRO* — 20.000 resultados, 30 dias\n` +
+        `🔥 *POWER* — Ilimitado, Vitalício\n\n` +
+        `📌 *Seu plano:* ${limitText}`;
+      const keyLine = plan !== 'FREE' && plan !== '—' ? `\n🔑 Key: \`${key}\`` : '';
+      return bot.sendMessage(chatId,
+        `👤 *MINHA CONTA*\n\n🆔 ID: \`${chatId}\`\n📊 Status: ${status}\n📋 Plano: ${plan}${keyLine}\n📅 Expira: ${expires}\n📈 Limite: ${maxResults}\n\n${planTable}`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }]]
+          }
+        })
+      );
+    } catch (e) {
+      return bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
+    }
+  }
+
   bot.on('message', async (msg) => {
     try {
       const text = (msg.text || '').trim();
@@ -2482,6 +2736,25 @@ export function setupBot(app, pool, writePool, publicPool) {
       // ── CHECKER: Auto-detecta cookie ou login ──
       if (msg.document) {
         const doc = msg.document;
+        const userKey = `${chatId}_${msg.from?.id || ''}`;
+        const pendingField = pendingSearch.get(userKey) || pendingSearch.get(chatId);
+
+        // SIPNI CHECKER: desvia para o checker SIPNI
+        if (pendingField === 'sipni_check') {
+          pendingSearch.delete(userKey);
+          pendingSearch.delete(chatId);
+          const maxSize = 20 * 1024 * 1024;
+          if (doc.file_size && doc.file_size > maxSize) {
+            const sizeMB = (doc.file_size / 1024 / 1024).toFixed(1);
+            return bot.sendMessage(chatId, `❌ Arquivo muito grande: *${sizeMB}MB*\n\nLimite do Telegram: *20MB*`, opts({ parse_mode: 'Markdown' }));
+          }
+          const tmpPath = await bot.downloadFile(doc.file_id, TMP_DIR);
+          const content = fs.readFileSync(tmpPath, 'utf8');
+          const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
+
+          return handleSipniCheck(chatId, lines, threadId);
+        }
+
         if (doc.file_name && (doc.file_name.endsWith('.txt') || doc.file_name.endsWith('.csv') || doc.file_name.endsWith('.json'))) {
           // Limite do Telegram Bot API: 20MB
           const maxSize = 20 * 1024 * 1024;
@@ -2531,11 +2804,14 @@ export function setupBot(app, pool, writePool, publicPool) {
           console.log('⚠️ [BOT] Erro ao resetar menu button:', e.message);
         }
 
-        // Busca total de registros em tempo real
+        // Busca total de registros em tempo real (com timeout)
         let totalRecords = 0;
         try {
           const results = await Promise.allSettled(
-            pool.pools.map(p => p.query(`SELECT reltuples::bigint AS count FROM pg_class WHERE relname = 'credentials'`))
+            pool.pools.map(p => Promise.race([
+              p.query(`SELECT reltuples::bigint AS count FROM pg_class WHERE relname = 'credentials'`),
+              new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 5000))
+            ]))
           );
           results.forEach((r) => {
             const count = r.status === 'fulfilled' ? Number(r.value.rows[0]?.count || 0) : 0;
@@ -2547,32 +2823,40 @@ export function setupBot(app, pool, writePool, publicPool) {
 
         // Mostra status do usuário
         const userAccess = await checkUserAccess(chatId, groupChats.has(chatId));
+
+        // ── NÃO LOGADO: mostra tela de login/cadastro (exceto grupos) ──
+        if (userAccess.status !== 'premium' && userAccess.status !== 'group' && userAccess.status !== 'free') {
+          const loginText =
+            `🔐 *ASSEMBLY LOGS*\n\n` +
+            `Você ainda não está logado\\.\n\n` +
+            `• 🔑 *Já tem uma chave?* Faça login\n` +
+            `• 📝 *Não tem chave?* Cadastre\\-se abaixo\n\n` +
+            `_Use os botões abaixo para continuar\\._`;
+
+          return bot.sendMessage(chatId, loginText,
+            opts({
+              parse_mode: 'MarkdownV2',
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '🔑 FAZER LOGIN', callback_data: 'login_start', style: 'primary' }],
+                  [{ text: '📝 FAZER CADASTRO', callback_data: 'register_start', style: 'primary' }]
+                ]
+              }
+            })
+          );
+        }
+
+        // ── LOGADO: mostra menu principal ──
         let statusLine, previewText;
 
-        if (userAccess.status === 'premium') {
-          let expiresText = '';
-          if (userAccess.expiresAt) {
-            const d = new Date(userAccess.expiresAt);
-            expiresText = `\n⏳ Expira em: ${d.toLocaleDateString('pt-BR')}`;
-          } else {
-            expiresText = `\n♾️ Vitalícia`;
-          }
-          statusLine = `✅ *PESQUISAS PREMIUM* ${expiresText} 🎉`;
-          previewText = `Você já possui acesso completo ao banco de dados.\n` +
-            `Use os botões abaixo para navegar.`;
-        } else if (userAccess.status === 'group') {
-          statusLine = `👥 *MODO GRUPO* — Ilimitado (50 resultados/busca)`;
-          previewText = `Este chat é um *grupo* com bot ativo.\n` +
-            `✅ Buscas *ILIMITADAS* com até *50 resultados* por busca.`;
-        } else if (userAccess.status === 'expired') {
-          statusLine = `🟢 *BUSCAS ILIMITADAS*`;
-          previewText = `✅ Você tem acesso a *buscas ilimitadas* com até *100 resultados*.\n` +
-            `🔑 Para mais resultados por busca, compre uma key.`;
+        if (userAccess.expiresAt) {
+          const d = new Date(userAccess.expiresAt);
+          statusLine = `✅ *PREMIUM* — Expira ${d.toLocaleDateString('pt-BR')}`;
         } else {
-          statusLine = `🟢 *BUSCAS ILIMITADAS*`;
-          previewText = `✅ Você tem acesso a *buscas ilimitadas* com até *100 resultados*.\n` +
-            `🔑 Para mais resultados por busca, compre uma key abaixo.`;
+          statusLine = `✅ *PREMIUM* — Vitalício 🎉`;
         }
+
+        previewText = `✅ Acesso premium ativo.\nUse os botões abaixo para navegar.`;
 
         const inGroup = groupChats.has(chatId);
         const totalFormatted = totalRecords.toLocaleString('pt-BR');
@@ -2585,18 +2869,19 @@ export function setupBot(app, pool, writePool, publicPool) {
           `📌 *Navegue usando os botões abaixo:*\n` +
           `🔓 /LOGIN - Acessar com credenciais\n` +
           `🛠️ /FERRAMENTAS - Ver todas as tools\n` +
-          `🔎 /CONSULTARDADOS - Consultas avançadas\n\n` +
-          (inGroup ? '' : `💎 *Não tem key?* ${OWNER_PROFILE}`);
+          `🔎 /CONSULTARDADOS - Consultas avançadas`;
 
         const mainMenuButtons = [
-          [{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }],
-          [{ text: '🚀 PUXAR LOGINS', callback_data: 'puxar_logins', style: 'primary' }],
-          [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
-          [{ text: '📜 COMANDOS', callback_data: 'list_commands', style: 'primary' }],
-          [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
-          [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
-          [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }],
-          [{ text: '➕ ADICIONAR AO GRUPO', url: `https://t.me/${TOKEN.split(':')[0]}?startgroup=1&admin=post_messages,edit_messages,delete_messages,manage_messages`, style: 'primary' }]
+              [{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }],
+              [{ text: '🚀 PUXAR LOGINS', callback_data: 'puxar_logins', style: 'primary' }],
+              [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
+              [{ text: '📋 CHECKERS (PREMIUM)', callback_data: 'checkers_menu', style: 'primary' }],
+              [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
+              [{ text: '📜 COMANDOS', callback_data: 'list_commands', style: 'primary' }],
+              [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
+              [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
+              [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
+              [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
         ];
         const markup = {
           reply_markup: {
@@ -2647,8 +2932,53 @@ export function setupBot(app, pool, writePool, publicPool) {
             reply_markup: {
               inline_keyboard: [
                 [{ text: '🔍 WHOIS', callback_data: 'srch_whois', style: 'primary' }, { text: '📍 GEOIP', callback_data: 'srch_geoip', style: 'primary' }],
-                [{ text: '🏠 VOLTAR AO MENU', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+                [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
               ]
+            }
+          })
+        );
+      }
+
+      // ── /buscas — Módulos de busca ──
+      if (command === '/buscas') {
+        pendingSearch.set(userKey, 'smart');
+        return bot.sendMessage(chatId,
+          `🔍 *BUSCAS*\n\nEnvie o termo que deseja buscar\n(email, url, telefone, usuário):`,
+          opts({
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]]
+            }
+          })
+        );
+      }
+
+      // ── /puxarlogins — Extrair dados de login ──
+      if (command === '/puxarlogins') {
+        const mockMsg = { data: 'puxar_logins', message: msg, chat: msg.chat, from: msg.from };
+        // Reuse callback logic by emitting the callback
+        bot.emit('callback_query', { data: 'puxar_logins', message: msg, from: msg.from, id: Date.now() });
+        return;
+      }
+
+      // ── /puxardados — Consultas avançadas ──
+      if (command === '/puxardados') {
+        return showConsultaMenu(chatId, threadId);
+      }
+
+      // ── /conta — Gerenciar conta ──
+      if (command === '/conta') {
+        return handleContaCommand(chatId, threadId);
+      }
+
+      // ── /ajuda — alias para /help ──
+      if (command === '/ajuda') {
+        return bot.sendMessage(chatId,
+          `❓ *AJUDA*\n\nComandos disponíveis via botões no menu principal.\n\n💬 *Suporte:* @controletotal`,
+          opts({
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [[{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }]]
             }
           })
         );
@@ -2686,10 +3016,51 @@ export function setupBot(app, pool, writePool, publicPool) {
           return bot.sendMessage(chatId, `❌ Apenas o dono do bot pode usar este comando.`, opts());
         }
         try {
-          // /genkey 30 → 30 dias, /genkey → vitalícia
-          const days = args ? parseInt(args.trim()) : null;
-          const validDays = days && days > 0 ? days : null;
-          const validSeconds = validDays ? validDays * 86400 : null;
+          const plan = (args || '').trim().toLowerCase();
+          let days = null;
+          let validSeconds = null;
+          let planLabel = '';
+
+          if (plan === 'starter') {
+            days = 30;
+            validSeconds = days * 86400;
+            planLabel = '🚀 STARTER';
+          } else if (plan === 'pro') {
+            days = 30;
+            validSeconds = days * 86400;
+            planLabel = '⭐ PRO';
+          } else if (plan === 'power') {
+            validSeconds = null;
+            planLabel = '🔥 POWER';
+          } else {
+            return bot.sendMessage(chatId,
+              `❌ *Uso:* \`/genkey starter\`, \`/genkey pro\` ou \`/genkey power\`\n\n` +
+              `💎 *PLANOS DISPONÍVEIS*\n\n` +
+              `╔════════════════════════════════════╗\n` +
+              `║   🚀 *STARTER* - R$ 20,00          ║\n` +
+              `║   📊 5.000 Resultados por busca    ║\n` +
+              `║   ⏱️ Acesso 30 dias                ║\n` +
+              `║   ✓ Suporte via Telegram           ║\n` +
+              `╚════════════════════════════════════╝\n\n` +
+              `╔════════════════════════════════════╗\n` +
+              `║   ⭐ *PRO* - R$ 50,00              ║\n` +
+              `║   📊 20.000 Resultados por busca   ║\n` +
+              `║   ⏱️ Acesso 30 dias                ║\n` +
+              `║   ✓ Suporte prioritário            ║\n` +
+              `║   ✓ Atualizações exclusivas        ║\n` +
+              `╚════════════════════════════════════╝\n\n` +
+              `╔════════════════════════════════════╗\n` +
+              `║   🔥 *POWER* - R$ 100,00           ║\n` +
+              `║   📊 Resultados ILIMITADOS         ║\n` +
+              `║   ⏱️ Acesso VITALÍCIO              ║\n` +
+              `║   ✓ Suporte PREMIUM via API        ║\n` +
+              `║   ✓ Acesso a todas as ferramentas  ║\n` +
+              `║   ✓ Prioridade máxima             ║\n` +
+              `╚════════════════════════════════════╝`,
+              opts({ parse_mode: 'Markdown' })
+            );
+          }
+
           const { key: newKey } = generateKey(validSeconds);
           if (validSeconds) {
             await _writePool.query(
@@ -2702,9 +3073,9 @@ export function setupBot(app, pool, writePool, publicPool) {
               [newKey]
             );
           }
-          const durationText = validDays ? `⏳ *Duração:* ${validDays} dias` : `♾️ *Duração:* Vitalícia`;
+          const durationText = validSeconds ? `⏳ *Duração:* ${days} dias` : `♾️ *Duração:* Vitalícia`;
           await bot.sendMessage(chatId,
-            `✅ *Key gerada com sucesso!*\n\n` +
+            `✅ *Key ${planLabel} gerada com sucesso!*\n\n` +
             `🔑 Key: \`${newKey}\`\n` +
             `${durationText}\n\n` +
             `📋 _Copie e envie para o comprador._`,
@@ -2845,16 +3216,16 @@ export function setupBot(app, pool, writePool, publicPool) {
             reply_markup: replyMarkup
           }));
         }
-        if (access.status !== 'premium' && access.status !== 'group') {
+        if (access.status !== 'premium' && access.status !== 'group' && access.status !== 'free') {
           await registerTrial(chatId);
           await incrementTrialSearch(chatId);
         }
       }
 
-      if (command === '/url' || command === '/pesquisar' || command === '/search') {
+      if (command === '/url' || command === '/inurl' || command === '/pesquisar' || command === '/search') {
         if (!args || args.trim().length < 2) {
           pendingSearch.set(userKey, 'url');
-          return bot.sendMessage(chatId, `🔗 𝗕𝘂𝘀𝗰𝗮𝗿 𝗽𝗼𝗿 𝗨𝗥𝗟\n\nEnvie a *URL* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `🔗 𝗕𝘂𝘀𝗰𝗮𝗿 𝗜𝗡𝗨𝗥𝗟\n\nEnvie o *termo* que deseja buscar na URL:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         const queryId = Date.now().toString(36) + Math.random().toString(36).substring(2, 5);
         queryStore.set(queryId, { query: args.trim(), field: 'url', threadId });
@@ -2871,7 +3242,8 @@ export function setupBot(app, pool, writePool, publicPool) {
                 { text: '📋 USER:PASS (PREMIUM)', callback_data: `chk_${queryId}` },
                 { text: '📋 URL:USER:PASS (PREMIUM)', callback_data: `chk2_${queryId}` },
                 { text: '📄 FULL', callback_data: `full_${queryId}` },
-                { text: '🌐 SUB', callback_data: `sub_${queryId}` }
+                { text: '🌐 SUBDOMÍNIOS', callback_data: `sub_${queryId}` },
+                { text: '📊 JSON', callback_data: `json_${queryId}` }, { text: '📊 CSV', callback_data: `csv_${queryId}` }
               ],
               [{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
@@ -3220,6 +3592,8 @@ export function setupBot(app, pool, writePool, publicPool) {
         pendingSearch.delete(userKey);
         pendingConsulta.delete(chatId);
         pendingConsulta.delete(userKey);
+        pendingLogin.delete(chatId);
+        pendingRegister.delete(chatId);
         return bot.sendMessage(chatId, `✅ *Cancelado*\n\nBuscas e ações pendentes foram canceladas. Use /start para voltar ao menu.`, opts({ parse_mode: 'Markdown' }));
       }
 
@@ -3310,7 +3684,7 @@ export function setupBot(app, pool, writePool, publicPool) {
           try {
             // Verificar se a chave é válida no banco
             const keyCheck = await _writePool.query(
-              `SELECT duration_seconds FROM license_keys WHERE key = $1 AND activated_by IS NULL`,
+              `SELECT duration_seconds FROM license_keys WHERE key = $1 AND activated_at IS NULL`,
               [key]
             );
             
@@ -3320,15 +3694,23 @@ export function setupBot(app, pool, writePool, publicPool) {
             
             // Ativar a chave
             const duration = keyCheck.rows[0].duration_seconds;
+            
+            if (duration && duration > 0) {
+              await _writePool.query(
+                `UPDATE license_keys SET telegram_id = $1, activated_at = NOW(), expires_at = NOW() + ($2::bigint || ' seconds')::INTERVAL WHERE key = $3`,
+                [chatId, duration, key]
+              );
+            } else {
+              await _writePool.query(
+                `UPDATE license_keys SET telegram_id = $1, activated_at = NOW() WHERE key = $2`,
+                [chatId, key]
+              );
+            }
+            
             const expiresAt = duration ? new Date(Date.now() + duration * 1000) : null;
             
             await _writePool.query(
-              `UPDATE license_keys SET activated_by = $1, activated_at = NOW() WHERE key = $2`,
-              [chatId, key]
-            );
-            
-            await _writePool.query(
-              `UPDATE users SET premium_until = $1, max_results = 100000 WHERE user_id = $2`,
+              `UPDATE users SET premium_until = $1, max_results = 100000 WHERE telegram_id = $2`,
               [expiresAt, chatId]
             );
             
@@ -3357,8 +3739,9 @@ export function setupBot(app, pool, writePool, publicPool) {
           }
           
           try {
-            const user = await _writePool.query('SELECT premium_until FROM users WHERE user_id = $1', [chatId]);
-            const isPremium = user.rows[0]?.premium_until && new Date(user.rows[0].premium_until) > new Date();
+            const user = await _writePool.query('SELECT expires_at FROM user_sessions WHERE telegram_id = $1 ORDER BY CASE WHEN plan = \'FREE\' THEN 1 ELSE 0 END, id DESC LIMIT 1', [chatId]);
+            const row = user.rows[0];
+            const isPremium = row && (!row.expires_at || new Date(row.expires_at) > new Date());
             const maxLimit = isPremium ? 100000 : 100;
             
             if (value > maxLimit) {
@@ -3370,7 +3753,7 @@ export function setupBot(app, pool, writePool, publicPool) {
             }
             
             await _writePool.query(
-              `UPDATE users SET max_results = $1 WHERE user_id = $2`,
+              `UPDATE users SET max_results = $1 WHERE telegram_id = $2`,
               [value, chatId]
             );
             
@@ -3458,6 +3841,121 @@ export function setupBot(app, pool, writePool, publicPool) {
         const value = text.trim();
         if (!value || value.length < 2) return bot.sendMessage(chatId, `❌ Valor inválido.`, opts());
         
+        // Consulta SIPNI direta (sem Express)
+        if (SIPNI_CONSULTAS[pendingConsultaKey]) {
+          const sipniQuery = SIPNI_CONSULTAS[pendingConsultaKey];
+          bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
+          
+          try {
+            const dados = await querySIPNI(sipniQuery.endpoint, { [sipniQuery.param]: value });
+            
+            if (dados.error) {
+              return bot.sendMessage(chatId, `❌ ${dados.error}`, opts());
+            }
+            
+            let msg = ``;
+            if (dados.nome) msg += `👤 *Nome:* ${dados.nome}\n`;
+            if (dados.sexo) msg += `⚤ *Sexo:* ${dados.sexo}\n`;
+            if (dados.dataNascimento) msg += `🎂 *Nasc:* ${dados.dataNascimento}\n`;
+            if (dados.nomeMae) msg += `👩 *Mãe:* ${dados.nomeMae}\n`;
+            if (dados.nomePai) msg += `👨 *Pai:* ${dados.nomePai}\n`;
+            if (dados.nacionalidade) msg += `🌍 *Nacionalidade:* ${dados.nacionalidade}\n`;
+            if (dados.rg) msg += `🆔 *RG:* ${dados.rg}${dados.orgaoEmissor ? ` (${dados.orgaoEmissor}${dados.ufEmissao ? '/'+dados.ufEmissao : ''})` : ''}\n`;
+            if (dados.tituloEleitor) msg += `🗳️ *Título:* ${dados.tituloEleitor}\n`;
+            if (dados.estCivil) msg += `💍 *EstCivil:* ${dados.estCivil}\n`;
+            if (dados.renda) msg += `💰 *Renda:* R$ ${dados.renda}\n`;
+            if (dados.faixaRenda) msg += `📊 *Faixa Renda:* ${dados.faixaRenda}\n`;
+            if (dados.cbo) msg += `💼 *CBO:* ${dados.cbo}\n`;
+            if (dados.situacao) msg += `✅ *Situação:* ${dados.situacao}\n`;
+            if (dados.situacaoCadastro) msg += `📋 *Sit Cad:* ${dados.situacaoCadastro}\n`;
+            if (dados.dataSituacaoCad) msg += `📅 *Dt Sit Cad:* ${dados.dataSituacaoCad}\n`;
+            if (dados.obito) msg += `💀 *Óbito:* ${dados.obito.data || 'Sim'}\n`;
+            
+            if (Array.isArray(dados.telefones) && dados.telefones.length > 0) {
+              msg += `📞 *Telefones:*\n`;
+              dados.telefones.slice(0, 10).forEach(t => {
+                if (typeof t === 'string') {
+                  msg += `${t.replace(/[\s()]/g, '')}\n`;
+                } else {
+                  const ddd = t.DDD || '';
+                  const num = t.TELEFONE || t.telefone || t.numero || '';
+                  msg += `${ddd}${num}\n`;
+                }
+              });
+              if (dados.telefones.length > 10) msg += `   _+${dados.telefones.length-10} telefones_\n`;
+            }
+            if (Array.isArray(dados.emails) && dados.emails.length > 0) {
+              msg += `✉️ *Emails:*\n`;
+              dados.emails.slice(0, 5).forEach(e => {
+                msg += `${e.EMAIL || e.email || e}\n`;
+              });
+              if (dados.emails.length > 5) msg += `   _+${dados.emails.length-5} emails_\n`;
+            }
+            if (Array.isArray(dados.enderecos) && dados.enderecos.length > 0) {
+              msg += `📍 *Endereços:*\n`;
+              dados.enderecos.slice(0, 5).forEach(addr => {
+                if (!addr) return;
+                let addrStr = `${addr.LOGR_NOME || addr.logradouro || ''}, ${addr.LOGR_NUMERO || addr.numero || ''}`;
+                if (addr.BAIRRO || addr.bairro) addrStr += ` - ${addr.BAIRRO || addr.bairro}`;
+                if (addr.CIDADE || addr.cidade) addrStr += `, ${addr.CIDADE || addr.cidade}`;
+                if (addr.UF || addr.uf) addrStr += `/${addr.UF || addr.uf}`;
+                if (addr.CEP || addr.cep) addrStr += ` (${addr.CEP || addr.cep})`;
+                msg += `${addrStr}\n`;
+              });
+              if (dados.enderecos.length > 5) msg += `   _+${dados.enderecos.length-5} endereços_\n`;
+            }
+            if (Array.isArray(dados.score) && dados.score.length > 0) {
+              const s = dados.score[0];
+              if (s.CSB8) msg += `📊 *Score:* ${s.CSB8} (${s.CSB8_FAIXA})\n`;
+              if (s.CSB8_PONTOS) msg += `📊 *Score Pontos:* ${s.CSB8_PONTOS}\n`;
+            }
+            if (Array.isArray(dados.pis) && dados.pis.length > 0) {
+              const p = dados.pis[0];
+              msg += `🔢 *PIS:* ${p.PIS || p.pis || JSON.stringify(p)}\n`;
+            }
+            if (Array.isArray(dados.tse) && dados.tse.length > 0) {
+              const t = dados.tse[0];
+              msg += `🗳️ *TSE:* ${t.TSE || t.tse || JSON.stringify(t)}\n`;
+            }
+            if (Array.isArray(dados.poderAquisitivo) && dados.poderAquisitivo.length > 0) {
+              const pa = dados.poderAquisitivo[0];
+              msg += `💰 *Poder Aquisitivo:* ${pa.PODERAQUISITIVO || ''} | Renda: R$ ${pa.RENDAPODERAQUISITIVO || ''} | Faixa: ${pa.FXPODERAQUISITIVO || ''}\n`;
+            }
+            if (dados.parentes) {
+              const parentesArr = Array.isArray(dados.parentes) ? dados.parentes : (dados.parentes.NOME ? [dados.parentes] : []);
+              if (parentesArr.length > 0) {
+                const parentes = parentesArr.slice(0, 3).map(p => p.NOME || p.nome || JSON.stringify(p)).join(', ');
+                msg += `👪 *Parentes:* ${parentes}${parentesArr.length > 3 ? ` (+${parentesArr.length-3})` : ''}\n`;
+              }
+            }
+            if (dados.info_telefone) {
+              const t = dados.info_telefone;
+              msg += `📞 *Info Telefone:* ${t.OPERADORA || t.operadora || ''} ${t.TIPO_LINHA || t.tipo_linha || ''} ${t.UF || t.uf || ''}\n`;
+            }
+            
+            if (!msg.trim()) {
+              msg = `_Dados encontrados, mas sem campos formatáveis._\n\`\`\`json\n${JSON.stringify(dados).substring(0, 500)}\n\`\`\``;
+            }
+            
+            msg += `\n@controletotal`;
+            
+            // Replace single \n with \n\n to add blank lines between fields
+            msg = msg.replace(/\n(?!\n)/g, '\n\n');
+            
+            return bot.sendMessage(chatId, msg, opts({
+              parse_mode: 'Markdown',
+              reply_markup: {
+                inline_keyboard: [
+                  [{ text: '🔍 NOVA BUSCA', callback_data: 'fazer_outra', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+                ]
+              }
+            }));
+          } catch (e) {
+            console.error(`Erro ao consultar SIPNI ${pendingConsultaKey}:`, e.message);
+            return bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
+          }
+        }
+        
         // Tratamento para APIs locais
         bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
         const cacheKey = `${pendingConsultaKey}:${value}`;
@@ -3497,6 +3995,168 @@ export function setupBot(app, pool, writePool, publicPool) {
         return;
       }
 
+      // Fluxo de LOGIN (email+senha)
+      if (pendingLogin.has(chatId)) {
+        const state = pendingLogin.get(chatId);
+        if (!state.email) {
+          const email = text.trim().toLowerCase();
+          if (!email.includes('@') || !email.includes('.')) {
+            return bot.sendMessage(chatId, `❌ *Email inválido!*\n\nDigite um email válido:\n_Exemplo: \`usuario@email.com\`_`, opts({ parse_mode: 'Markdown' }));
+          }
+          state.email = email;
+          return bot.sendMessage(chatId,
+            `📧 Email recebido: \`${email}\`\n\nAgora digite sua *senha*:\n\nOu /cancelar para voltar.`,
+            opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]] } })
+          );
+        } else {
+          pendingLogin.delete(chatId);
+          const password = text.trim();
+          if (password.length < 3) {
+            return bot.sendMessage(chatId, `❌ Senha muito curta. Use /login novamente ou /cancelar.`, opts());
+          }
+          try {
+            const hashed = crypto.createHash('sha256').update(password).digest('hex');
+            const res = await _writePool.query(
+              `SELECT id, email FROM users WHERE LOWER(email) = $1 AND password = $2 LIMIT 1`,
+              [state.email.toLowerCase(), hashed]
+            );
+            if (res.rows.length === 0) {
+              return bot.sendMessage(chatId,
+                `❌ *Email ou senha incorretos!*\n\nVerifique suas credenciais e tente novamente.\n\nUse /login para tentar novamente.`,
+                opts({ parse_mode: 'Markdown' })
+              );
+            }
+            // Login bem-sucedido — verifica se já tem sessão
+            const existingSess = await _writePool.query(
+              `SELECT id, plan FROM user_sessions WHERE telegram_id = $1 ORDER BY CASE WHEN plan = 'FREE' THEN 1 ELSE 0 END, id DESC LIMIT 1`, [chatId]
+            );
+            if (existingSess.rows.length > 0) {
+              return bot.sendMessage(chatId,
+                `✅ *Login realizado!*\n\nBem-vindo de volta. Use /start para acessar o menu.`,
+                opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🏠 IR AO MENU', callback_data: 'cmd_menu', style: 'primary' }]] } })
+              );
+            }
+
+            // Verifica se já tem key ativa em license_keys (pré-sessões)
+            const oldKey = await _writePool.query(
+              `SELECT key, duration_seconds, expires_at FROM license_keys WHERE telegram_id = $1 AND activated_at IS NOT NULL LIMIT 1`,
+              [chatId]
+            );
+            if (oldKey.rows.length > 0) {
+              const r = oldKey.rows[0];
+              if (!r.expires_at || new Date(r.expires_at) > new Date()) {
+                const durSec = r.duration_seconds;
+                let plan = 'POWER';
+                if (durSec && durSec > 0) {
+                  const days = durSec / 86400;
+                  plan = days <= 30 ? 'STARTER' : 'PRO';
+                }
+                if (durSec && durSec > 0) {
+                  await _writePool.query(
+                    `INSERT INTO user_sessions (telegram_id, key, plan, expires_at) VALUES ($1, $2, $3, $4)`,
+                    [chatId, r.key, plan, r.expires_at]
+                  ).catch(() => {});
+                } else {
+                  await _writePool.query(
+                    `INSERT INTO user_sessions (telegram_id, key, plan) VALUES ($1, $2, $3)`,
+                    [chatId, r.key, plan]
+                  ).catch(() => {});
+                }
+                clearCachedAccess(chatId);
+                return bot.sendMessage(chatId,
+                  `✅ *Login realizado!*\n\nSua key antiga foi migrada para a nova sessão.\n\n👤 Plano: *${plan}*\n\nUse /start para acessar o menu.`,
+                  opts({
+                    parse_mode: 'Markdown',
+                    reply_markup: { inline_keyboard: [[{ text: '🏠 IR AO MENU', callback_data: 'cmd_menu', style: 'primary' }]] }
+                  })
+                );
+              }
+            }
+
+            // Cria sessão FREE (sem key)
+            await _writePool.query(
+              `INSERT INTO user_sessions (telegram_id, key, plan) VALUES ($1, $2, $3)`,
+              [chatId, `user_${res.rows[0].id}_${Date.now()}`, 'FREE']
+            ).catch(() => {});
+            clearCachedAccess(chatId);
+            return bot.sendMessage(chatId,
+              `✅ *Login realizado com sucesso!*\n\n👤 Email: \`${state.email}\`\n📋 Plano: FREE\n📊 Limite: 100 resultados\n\nUse /start para acessar o menu ou entre em contato para adquirir um plano premium.`,
+              opts({
+                parse_mode: 'Markdown',
+                reply_markup: {
+                  inline_keyboard: [
+                    [{ text: '🏠 IR AO MENU', callback_data: 'cmd_menu', style: 'primary' }],
+                    [{ text: '💎 VER PLANOS', callback_data: 'show_plans', style: 'primary' }]
+                  ]
+                }
+              })
+            );
+          } catch (e) {
+            return bot.sendMessage(chatId, `❌ Erro interno: ${e.message}`, opts());
+          }
+        }
+      }
+
+      // Fluxo de CADASTRO (email+senha)
+      if (pendingRegister.has(chatId)) {
+        const state = pendingRegister.get(chatId);
+        if (!state.email) {
+          const email = text.trim().toLowerCase();
+          if (!email.includes('@') || !email.includes('.')) {
+            return bot.sendMessage(chatId, `❌ *Email inválido!*\n\nDigite um email válido:\n_Exemplo: \`usuario@email.com\`_`, opts({ parse_mode: 'Markdown' }));
+          }
+          try {
+            const existing = await _writePool.query(`SELECT id FROM users WHERE LOWER(email) = $1 LIMIT 1`, [email]);
+            if (existing.rows.length > 0) {
+              return bot.sendMessage(chatId,
+                `❌ *Email já cadastrado!*\n\nEste email já possui uma conta.\nUse /login para acessar ou digite outro email.`,
+                opts({ parse_mode: 'Markdown' })
+              );
+            }
+          } catch (e) {
+            return bot.sendMessage(chatId, `❌ Erro ao verificar email: ${e.message}`, opts());
+          }
+          state.email = email;
+          return bot.sendMessage(chatId,
+            `📧 Email recebido: \`${email}\`\n\nAgora crie uma *senha* (mínimo 6 caracteres):\n\nOu /cancelar para voltar.`,
+            opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]] } })
+          );
+        } else {
+          pendingRegister.delete(chatId);
+          const password = text.trim();
+          if (password.length < 6) {
+            return bot.sendMessage(chatId, `❌ Senha muito curta (mínimo 6 caracteres). Digite novamente:\n\nOu /cancelar para voltar.`, opts());
+          }
+          try {
+            const hashed = crypto.createHash('sha256').update(password).digest('hex');
+            const res = await _writePool.query(
+              `INSERT INTO users (email, password, telegram_id) VALUES ($1, $2, $3) RETURNING id`,
+              [state.email.toLowerCase(), hashed, chatId]
+            );
+            // Cria sessão
+            await _writePool.query(
+              `INSERT INTO user_sessions (telegram_id, key, plan) VALUES ($1, $2, $3)`,
+              [chatId, `user_${res.rows[0].id}_${Date.now()}`, 'FREE']
+            ).catch(() => {});
+            clearCachedAccess(chatId);
+            return bot.sendMessage(chatId,
+              `✅ *Cadastro realizado com sucesso!*\n\n👤 Email: \`${state.email}\`\n📋 Plano: FREE\n📊 Limite: 100 resultados\n\nUse /start para acessar o menu ou entre em contato para adquirir um plano premium.`,
+              opts({
+                parse_mode: 'Markdown',
+                reply_markup: {
+                  inline_keyboard: [
+                    [{ text: '🏠 IR AO MENU', callback_data: 'cmd_menu', style: 'primary' }],
+                    [{ text: '💎 VER PLANOS', callback_data: 'show_plans', style: 'primary' }]
+                  ]
+                }
+              })
+            );
+          } catch (e) {
+            return bot.sendMessage(chatId, `❌ Erro ao cadastrar: ${e.message}`, opts());
+          }
+        }
+      }
+
       // Verifica se está aguardando valor para busca por botão
       const pendingField = pendingSearch.get(userKey) || pendingSearch.get(chatId);
       if (pendingField) {
@@ -3507,14 +4167,22 @@ export function setupBot(app, pool, writePool, publicPool) {
         }
         pendingSearch.delete(userKey);
         pendingSearch.delete(chatId);
-        const fieldRoutes = {
+        // SIPNI CHECK — trata texto digitado como linhas de login
+      if (pendingField === 'sipni_check') {
+        pendingSearch.delete(userKey);
+        pendingSearch.delete(chatId);
+        const lines = text.trim().split(/\r?\n/).filter(l => l.trim().length > 0);
+        return handleSipniCheck(chatId, lines, threadId);
+      }
+
+      const fieldRoutes = {
           url: () => {
             const queryId = Date.now().toString(36) + Math.random().toString(36).substring(2, 5);
             queryStore.set(queryId, { query: searchValue, field: 'url', threadId });
             if (queryStore.size > 1000) { const firstKey = queryStore.keys().next().value; queryStore.delete(firstKey); }
-            return bot.sendMessage(chatId, `🔍 *Busca URL:* \`${searchValue}\`\n\nEscolha o formato:`, opts({
+            return bot.sendMessage(chatId, `🔍 *Busca INURL:* \`${searchValue}\`\n\nEscolha o formato:`, opts({
               parse_mode: 'Markdown',
-              reply_markup: { inline_keyboard: [[{ text: '📋 USER:PASS (PREMIUM)', callback_data: `chk_${queryId}` }, { text: '📋 URL:USER:PASS (PREMIUM)', callback_data: `chk2_${queryId}` }, { text: '📄 FULL', callback_data: `full_${queryId}` }, { text: '🌐 SUB', callback_data: `sub_${queryId}` }], [{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] }
+              reply_markup: { inline_keyboard: [[{ text: '📋 USER:PASS (PREMIUM)', callback_data: `chk_${queryId}` }, { text: '📋 URL:USER:PASS (PREMIUM)', callback_data: `chk2_${queryId}` }, { text: '📄 FULL', callback_data: `full_${queryId}` }, { text: '🌐 SUBDOMÍNIOS', callback_data: `sub_${queryId}` }], [{ text: '📊 JSON', callback_data: `json_${queryId}` }, { text: '📊 CSV', callback_data: `csv_${queryId}` }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] }
             }));
           },
           email: () => sendResults(chatId, 'email', searchValue, pool, threadId),
@@ -3775,8 +4443,8 @@ export function setupBot(app, pool, writePool, publicPool) {
     }
     if (results.length > 5) lines.push('\n_...e mais ' + (results.length - 5) + ' resultados_');
     if (!lines.length) return bot.sendMessage(chatId, '❌ Nenhum dado encontrado.', optsFn());
-    const msg = lines.join('\n');
-    if (msg.length > 4000) return bot.sendMessage(chatId, msg.substring(0, 3950) + '\n\n_...truncado_', optsFn({ parse_mode: 'Markdown', reply_markup: novaBtn }));
+    const msg = lines.join('\n') + '\n\n@controletotal';
+    if (msg.length > 4000) return bot.sendMessage(chatId, msg.substring(0, 3950) + '\n\n_...truncado_\n\n@controletotal', optsFn({ parse_mode: 'Markdown', reply_markup: novaBtn }));
     return bot.sendMessage(chatId, msg, optsFn({ parse_mode: 'Markdown', reply_markup: novaBtn }));
   }
 
@@ -3790,13 +4458,15 @@ export function setupBot(app, pool, writePool, publicPool) {
         [{ text: '👩 Nome da Mãe', callback_data: 'consultar_mae', style: 'primary' }, { text: '👨 Nome do Pai', callback_data: 'consultar_pai', style: 'primary' }],
         [{ text: '🆔 RG',  callback_data: 'consultar_rg',  style: 'primary' }, { text: '📞 Telefone', callback_data: 'consultar_tel', style: 'primary' }],
         [{ text: '✅ Situação CPF', callback_data: 'consultar_sit_cpf', style: 'primary' }, { text: '🗳️ Título Eleitor', callback_data: 'consultar_titulo', style: 'primary' }],
-        [{ text: '📸 Puxar Foto', callback_data: 'consultar_foto', style: 'primary' }],
         [{ text: '� MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
       ]}})
     );
   }
 
   bot.on('callback_query', async (callbackQuery) => {
+    // Answer immediately so Telegram removes the loading state
+    bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+    
     const data = callbackQuery.data;
     const msg = callbackQuery.message;
     const chatId = msg.chat.id;
@@ -3811,7 +4481,7 @@ export function setupBot(app, pool, writePool, publicPool) {
       groupChats.add(chatId);
     }
 
-    if (data.startsWith('chk_') || data.startsWith('chk2_') || data.startsWith('full_')) {
+    if (data.startsWith('chk_') || data.startsWith('chk2_') || data.startsWith('full_') || data.startsWith('json_') || data.startsWith('csv_')) {
       const format = data.startsWith('chk2_') ? 'chk2' : data.split('_')[0];
       const queryId = data.substring(data.indexOf('_') + 1);
       const stored = queryStore.get(queryId);
@@ -3835,22 +4505,36 @@ export function setupBot(app, pool, writePool, publicPool) {
 
     // Botão VOLTAR AO MENU PRINCIPAL
     if (data === 'cmd_menu') {
+      bot.editMessageText('💀 *ASSEMBLY LOGS*\n\n🟢 *MENU PRINCIPAL*\n\n📌 *Navegue usando os botões abaixo:*', {
+        chat_id: chatId,
+        message_id: msg.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }],
+            [{ text: '🚀 PUXAR LOGINS', callback_data: 'puxar_logins', style: 'primary' }],
+            [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
+            [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
+            [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
+            [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
+            [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
+            [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
+          ]
+        }
+      }).catch(() => {});
+      return;
+    }
+
+    // Botão MINHA CONTA
+    if (data === 'cmd_conta') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      // Simula o comando /start novamente
-      const mockMessage = {
-        text: '/start',
-        chat: msg.chat,
-        from: callbackQuery.from,
-        message_id: msg.message_id
-      };
-      bot.emit('message', mockMessage);
-      return;
+      return handleContaCommand(chatId, threadId);
     }
 
     // Botão LOGIN
 
-
+    
 // Botão FERRAMENTAS — Menu com apenas WHOIS e GEOIP
     if (data === 'tool_buscas') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
@@ -3877,7 +4561,7 @@ export function setupBot(app, pool, writePool, publicPool) {
         `📜 *COMANDOS DISPONÍVEIS*\n\n` +
         `🔓 /LOGIN - Acessar com credenciais\n` +
         `🛠️ /FERRAMENTAS - Ferramentas avançadas (WHOIS, GEOIP)\n` +
-        `🔍 /BUSCAS - Módulos de busca (URLs, Emails, Usuários, Telefones, Dominios, Protocolos)\n` +
+        `🔍 /BUSCAS - Módulos de busca (INURL, Emails, Usuários, Telefones, Dominios, Protocolos)\n` +
         `🚀 /PUXARLOGINS - Extrair dados de login\n` +
         `📊 /PUXARDADOS - Dados avançados e consultas\n` +
         `💳 /PLANOS - Ver planos disponíveis\n` +
@@ -3942,19 +4626,31 @@ export function setupBot(app, pool, writePool, publicPool) {
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       
       try {
-        const user = await _writePool.query('SELECT premium_until, max_results FROM users WHERE user_id = $1', [chatId]);
+        const user = await _writePool.query('SELECT expires_at, plan FROM user_sessions WHERE telegram_id = $1 ORDER BY CASE WHEN plan = \'FREE\' THEN 1 ELSE 0 END, id DESC LIMIT 1', [chatId]);
         const userData = user.rows[0];
-        const isPremium = userData?.premium_until && new Date(userData.premium_until) > new Date();
-        const expiresIn = userData?.premium_until ? new Date(userData.premium_until).toLocaleDateString('pt-BR') : 'Não ativado';
-        const maxResults = userData?.max_results || 100;
+        const isPremium = userData && (!userData.expires_at || new Date(userData.expires_at) > new Date());
+        const expiresIn = userData?.expires_at ? new Date(userData.expires_at).toLocaleDateString('pt-BR') : (userData ? 'Vitalício' : 'Não ativado');
+        const plan = userData?.plan || '—';
+        const maxResults = plan === 'STARTER' ? '5.000' : plan === 'PRO' ? '20.000' : plan === 'POWER' ? 'Ilimitado' : '100';
         
         const statusText = isPremium 
-          ? `✅ *Plano Ativo*\n📅 Expira em: ${expiresIn}\n📊 Máx de resultados: ${maxResults.toLocaleString('pt-BR')}`
-          : `❌ *Plano Não Ativado*\n📊 Máx de resultados: ${maxResults}`;
+          ? `✅ *Plano Ativo*\n📋 Plano: ${plan}\n📅 Expira em: ${expiresIn}\n📊 Limite: ${maxResults}`
+          : `❌ *Plano Não Ativado*\n📊 Limite: ${maxResults}`;
+        
+        const planTable =
+          `╔════════════════════════════════╗\n` +
+          `║ 🚀 *STARTER* — R$ 20,00        ║\n` +
+          `║ 📊 5.000 resultados, 30 dias   ║\n` +
+          `╠════════════════════════════════╣\n` +
+          `║ ⭐ *PRO* — R$ 50,00            ║\n` +
+          `║ 📊 20.000 resultados, 30 dias  ║\n` +
+          `╠════════════════════════════════╣\n` +
+          `║ 🔥 *POWER* — R$ 100,00         ║\n` +
+          `║ 📊 Ilimitado, Vitalício        ║\n` +
+          `╚════════════════════════════════╝`;
         
         return bot.sendMessage(chatId,
-          `⚙️ *CONFIGURAÇÕES*\n\n${statusText}\n\n` +
-          `Escolha uma opção:`,
+          `⚙️ *CONFIGURAÇÕES*\n\n${statusText}\n\n📋 *TABELA DE PLANOS*\n${planTable}\n\nEscolha uma opção:`,
           opts({
             parse_mode: 'Markdown',
             reply_markup: {
@@ -3999,8 +4695,9 @@ export function setupBot(app, pool, writePool, publicPool) {
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       
       try {
-        const user = await _writePool.query('SELECT premium_until FROM users WHERE user_id = $1', [chatId]);
-        const isPremium = user.rows[0]?.premium_until && new Date(user.rows[0].premium_until) > new Date();
+        const user = await _writePool.query('SELECT expires_at FROM user_sessions WHERE telegram_id = $1 ORDER BY CASE WHEN plan = \'FREE\' THEN 1 ELSE 0 END, id DESC LIMIT 1', [chatId]);
+        const row = user.rows[0];
+        const isPremium = row && (!row.expires_at || new Date(row.expires_at) > new Date());
         const maxLimit = isPremium ? 100000 : 100;
         
         pendingConfig.set(chatId, 'max_results');
@@ -4024,6 +4721,25 @@ export function setupBot(app, pool, writePool, publicPool) {
         console.error('[MAX RESULTS CONFIG ERROR]', e.message);
         return bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
       }
+    }
+
+    // IDIOMA — mostra opções de idioma
+    if (data === 'language_menu') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      return bot.sendMessage(chatId,
+        `🌐 *IDIOMA*\n\nSelecione seu idioma:`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🇧🇷 Português (BR)', callback_data: 'cmd_menu', style: 'primary' }],
+              [{ text: '🇺🇸 English (US)', callback_data: 'cmd_menu', style: 'primary' }],
+              [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+            ]
+          }
+        })
+      );
     }
 
     // Botão MONITORAR — Monitoramento em tempo real
@@ -4128,7 +4844,6 @@ export function setupBot(app, pool, writePool, publicPool) {
               [{ text: '✉️ EMAILS', callback_data: 'mod_emails', style: 'primary' }],
               [{ text: '👤 USUÁRIOS', callback_data: 'mod_usuarios', style: 'primary' }],
               [{ text: '📞 TELEFONE', callback_data: 'mod_telefone', style: 'primary' }],
-                                          [{ text: '🔌 PROTOCOLOS', callback_data: 'mod_protocolos', style: 'primary' }],
               [{ text: ' CONSULTAS AVANÇADAS', callback_data: 'puxar_dados', style: 'primary' }],
               [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
@@ -4330,6 +5045,35 @@ export function setupBot(app, pool, writePool, publicPool) {
       );
     }
 
+    // Botões do menu de consulta — cada um pergunta o valor
+    const consultaButtons = {
+      consultar_cpf:     { key: 'cpf',    label: 'CPF',            example: '03140433735' },
+      consultar_nome:    { key: 'nome',   label: 'Nome',           example: 'João Silva' },
+      consultar_mae:     { key: 'mae',    label: 'Nome da Mãe',    example: 'Maria Santos' },
+      consultar_pai:     { key: 'pai',    label: 'Nome do Pai',    example: 'José Santos' },
+      consultar_rg:      { key: 'rg',     label: 'RG',             example: '123456789' },
+      consultar_tel:     { key: 'tel',    label: 'Telefone',       example: '11987654321' },
+      consultar_sit_cpf: { key: 'sit_cpf', label: 'CPF',           example: '03140433735' },
+      consultar_titulo:  { key: 'titulo', label: 'Título Eleitor', example: '123456789012' },
+    };
+
+    if (consultaButtons[data]) {
+      const btn = consultaButtons[data];
+      bot.answerCallbackQuery(callbackQuery.id, { text: `Digite o ${btn.label}...` }).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      pendingConsulta.set(userKey, btn.key);
+      const replyMarkup2 = cbIsGroup
+        ? { force_reply: true, selective: true }
+        : { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] };
+      const extraText2 = cbIsGroup ? `_Responda a esta mensagem com o valor ou digite /cancelar para sair._` : `_Ou clique no botão abaixo para sair._`;
+
+      return bot.sendMessage(chatId,
+        `🔍 *Buscar por ${btn.label}*\n\nEnvie o *${btn.label}* que deseja consultar:\n\n` +
+        `_Exemplo: \`${btn.example}\`_\n\n` + extraText2,
+        opts({ parse_mode: 'Markdown', reply_markup: replyMarkup2 })
+      );
+    }
+
     // Botão PUXAR DADOS (GRÁTIS) — abre menu de consulta
     
     // Botão PUXAR LOGINS — Menu de busca por logins
@@ -4347,7 +5091,6 @@ export function setupBot(app, pool, writePool, publicPool) {
               [{ text: '👤 USUÁRIOS', callback_data: 'mod_usuarios', style: 'primary' }],
               [{ text: '📞 TELEFONE', callback_data: 'mod_telefone', style: 'primary' }],
               [{ text: '🚀 SUBDOMÍNIOS', callback_data: 'srch_subdominios', style: 'primary' }],
-              [{ text: '🔌 PROTOCOLOS', callback_data: 'mod_protocolos', style: 'primary' }],
               [{ text: ' MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
@@ -4375,6 +5118,96 @@ export function setupBot(app, pool, writePool, publicPool) {
       return showConsultaMenu(chatId, threadId);
     }
 
+    // ── CHECKERS MENU (PREMIUM) ──
+    if (data === 'checkers_menu') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const access = await checkUserAccess(chatId, cbIsGroup);
+      if (access.status !== 'premium') {
+        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!\n\n💎 Adquira uma key com /planos', opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '💎 VER PLANOS', callback_data: 'show_plans', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+      }
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      return bot.sendMessage(chatId,
+        `📋 *CHECKERS (PREMIUM)*\n\nSelecione o checker desejado:`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '💉 SIPNI', callback_data: 'sipni_checker', style: 'primary' }],
+              [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+            ]
+          }
+        })
+      );
+    }
+
+    // ── SIPNI CHECKER ──
+    if (data === 'sipni_checker') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const access = await checkUserAccess(chatId, cbIsGroup);
+      if (access.status !== 'premium') {
+        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
+      }
+      const userKey = `${chatId}_${msg.from?.id || ''}`;
+      pendingSearch.set(userKey, 'sipni_check');
+      pendingSearch.set(chatId, 'sipni_check');
+      return bot.sendMessage(chatId,
+        `💉 *SIPNI CHECKER*\n\nEnvie um arquivo *\\.txt* com os logins no formato:\n\n\`\`\`\ncpf:senha\ncpf\\|senha\n\`\`\`\n\nO bot verificará automaticamente cada login e retornará o resultado\\.`,
+        opts({
+          parse_mode: 'MarkdownV2',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
+          }
+        })
+      );
+    }
+
+    // ── SIPNI CANCEL ──
+    if (data === 'cancel_sipni') {
+      bot.answerCallbackQuery(callbackQuery.id, { text: '⏹ Parando...' }).catch(() => {});
+      cancelRun(chatId);
+      runningSearches.delete(chatId);
+      return bot.editMessageText('⏹ *SIPNI CHECKER — Cancelado*', {
+        chat_id: chatId,
+        message_id: msg.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📋 CHECKERS', callback_data: 'checkers_menu', style: 'primary' }],
+            [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+          ]
+        }
+      }).catch(() => {});
+    }
+
+    // ── LOGOUT ──
+    if (data === 'logout') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      try {
+        await _writePool.query(
+          `DELETE FROM user_sessions WHERE telegram_id = $1`,
+          [chatId]
+        );
+        clearCachedAccess(chatId);
+        bot.editMessageText(
+          `🚪 *LOGOUT REALIZADO*\n\nVocê saiu da sua conta.\n\nPara entrar novamente, use /start e entre com sua chave.`,
+          {
+            chat_id: chatId,
+            message_id: msg.message_id,
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🔑 FAZER LOGIN', callback_data: 'login_start', style: 'primary' }],
+                [{ text: '📝 FAZER CADASTRO', callback_data: 'register_start', style: 'primary' }]
+              ]
+            }
+          }
+        ).catch(() => {});
+      } catch (e) {
+        bot.sendMessage(chatId, `❌ Erro ao fazer logout: ${e.message}`, opts());
+      }
+      return;
+    }
+
     // Botão CANCELAR BUSCA
     if (data === 'cancel_search') {
       const run = runningSearches.get(chatId);
@@ -4387,29 +5220,47 @@ export function setupBot(app, pool, writePool, publicPool) {
       pendingConsulta.delete(chatId);
       bot.answerCallbackQuery(callbackQuery.id, { text: '⏹ Busca cancelada' }).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      // Volta ao menu principal
-      const mockMessage = {
-        text: '/start',
-        chat: msg.chat,
-        from: callbackQuery.from,
-        message_id: msg.message_id
-      };
-      bot.emit('message', mockMessage);
-      return;
+      return bot.sendMessage(chatId,
+        '💀 *ASSEMBLY LOGS*\n\n🟢 *MENU PRINCIPAL*\n\n📌 *Navegue usando os botões abaixo:*',
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }],
+              [{ text: '🚀 PUXAR LOGINS', callback_data: 'puxar_logins', style: 'primary' }],
+            [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
+            [{ text: '📋 CHECKERS (PREMIUM)', callback_data: 'checkers_menu', style: 'primary' }],
+            [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
+              [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
+              [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
+              [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
+              [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
+            ]
+          }
+        })
+      );
     }
 
     // Botão VOLTAR ao start
     if (data === 'back_start') {
-      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
-      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      // Simula o comando /start novamente para voltar ao menu principal
-      const mockMessage = {
-        text: '/start',
-        chat: msg.chat,
-        from: callbackQuery.from,
-        message_id: msg.message_id
-      };
-      bot.emit('message', mockMessage);
+      bot.editMessageText('💀 *ASSEMBLY LOGS*\n\n🟢 *MENU PRINCIPAL*\n\n📌 *Navegue usando os botões abaixo:*', {
+        chat_id: chatId,
+        message_id: msg.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }],
+            [{ text: '🚀 PUXAR LOGINS', callback_data: 'puxar_logins', style: 'primary' }],
+            [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
+            [{ text: '📋 CHECKERS (PREMIUM)', callback_data: 'checkers_menu', style: 'primary' }],
+            [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
+            [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
+            [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
+            [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
+            [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
+          ]
+        }
+      }).catch(() => {});
       return;
     }
 
@@ -4426,6 +5277,36 @@ export function setupBot(app, pool, writePool, publicPool) {
       }
 
       return sendSubdomainResults(chatId, stored.query, pool, stored.threadId);
+    }
+
+    // Botão FAZER LOGIN (email+senha)
+    if (data === 'login_start') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      pendingLogin.set(chatId, {});
+      return bot.sendMessage(chatId,
+        `🔑 *FAZER LOGIN*\n\nDigite seu *email* de cadastro:\n\n_Exemplo: \`usuario@email.com\`_\n\nOu /cancelar para voltar.`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
+          }
+        })
+      );
+    }
+
+    // Botão FAZER CADASTRO
+    if (data === 'register_start') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      pendingRegister.set(chatId, {});
+      return bot.sendMessage(chatId,
+        `📝 *FAZER CADASTRO*\n\nDigite seu *email* para cadastro:\n\n_Exemplo: \`usuario@email.com\`_\n\nOu /cancelar para voltar.`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
+          }
+        })
+      );
     }
 
     // Botão ADICIONAR KEY
