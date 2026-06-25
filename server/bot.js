@@ -3073,7 +3073,7 @@ const mainMenuButtons = [
             validSeconds = days * 86400;
             planLabel = '🔹 ADVANCED';
           } else if (plan === 'ultra') {
-            days = 30;
+            days = 15;
             validSeconds = days * 86400;
             planLabel = '🔹 ULTRA';
           } else if (plan === 'elite') {
