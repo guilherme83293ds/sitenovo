@@ -30,6 +30,7 @@ const BANNER_JPG = path.join(__dirname, 'assets', 'banner.jpg');
 const BANNER_PNG = path.join(__dirname, 'assets', 'banner.png');
 const BANNER_VIDEO = path.join(__dirname, 'assets', 'banner.mp4');
 const BANNER_PATH = BANNER_JPG; // Para compatibilidade com código existente
+const PLANOS_BANNER = path.join(__dirname, '..', 'planos.jpg');
 
 // Usa tmpdir do sistema (funciona no Windows e Linux)
 const TMP_DIR = os.tmpdir();
@@ -4658,7 +4659,7 @@ const mainMenuButtons = [
     if (data === 'show_plans') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      return bot.sendMessage(chatId,
+      const plansText =
         `💎 *PLANOS DISPONÍVEIS*\n\n` +
         `🚀 *STARTER* · R\$ 4,12\n` +
         `   ⏳ 7 dias · 🔍 15/dia · 📄 250\n\n` +
@@ -4673,23 +4674,28 @@ const mainMenuButtons = [
         `🔹 *ULTRA* · R\$ 19,20\n` +
         `   ⏳ 30 dias · 🔍 500/dia · 📄 5000\n\n` +
         `👑 *ELITE* · R\$ 82,50\n` +
-        `   ♾️ Vitalício · 🔍 Ilimitadas · 📄 50000`,
-        opts({
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '🛒 COMPRAR STARTER', url: 'https://t.me/controletotal', style: 'primary' }],
-              [{ text: '🛒 COMPRAR PREMIUM', url: 'https://t.me/controletotal', style: 'primary' }],
-              [{ text: '🛒 COMPRAR VIP', url: 'https://t.me/controletotal', style: 'primary' }],
-              [{ text: '🛒 COMPRAR ECONOMIC', url: 'https://t.me/controletotal', style: 'primary' }],
-              [{ text: '🛒 COMPRAR ADVANCED', url: 'https://t.me/controletotal', style: 'primary' }],
-              [{ text: '🛒 COMPRAR ULTRA', url: 'https://t.me/controletotal', style: 'primary' }],
-              [{ text: '🛒 COMPRAR ELITE', url: 'https://t.me/controletotal', style: 'primary' }],
-              [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
-            ]
-          }
-        })
-      );
+        `   ♾️ Vitalício · 🔍 Ilimitadas · 📄 50000`;
+      const plansMarkup = {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🛒 COMPRAR STARTER', url: 'https://t.me/controletotal', style: 'primary' }],
+            [{ text: '🛒 COMPRAR PREMIUM', url: 'https://t.me/controletotal', style: 'primary' }],
+            [{ text: '🛒 COMPRAR VIP', url: 'https://t.me/controletotal', style: 'primary' }],
+            [{ text: '🛒 COMPRAR ECONOMIC', url: 'https://t.me/controletotal', style: 'primary' }],
+            [{ text: '🛒 COMPRAR ADVANCED', url: 'https://t.me/controletotal', style: 'primary' }],
+            [{ text: '🛒 COMPRAR ULTRA', url: 'https://t.me/controletotal', style: 'primary' }],
+            [{ text: '🛒 COMPRAR ELITE', url: 'https://t.me/controletotal', style: 'primary' }],
+            [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+          ]
+        }
+      };
+      if (fs.existsSync(PLANOS_BANNER)) {
+        return bot.sendPhoto(chatId, PLANOS_BANNER, opts({ caption: plansText, ...plansMarkup })).catch(() =>
+          bot.sendMessage(chatId, plansText, opts(plansMarkup))
+        );
+      }
+      return bot.sendMessage(chatId, plansText, opts(plansMarkup));
     }
 
     // Botão CONFIGURAÇÕES
