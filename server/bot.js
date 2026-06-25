@@ -936,7 +936,7 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
     if (cleanedRows.length === 0) {
       if (loadingMsg) bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
       if (cleanedRows.govBlocked) {
-        return bot.sendMessage(chatId, `❌ Sites governamentais bloqueado no trial`, opts({ parse_mode: 'Markdown' }));
+        return bot.sendMessage(chatId, `❌ Usuários Trial não tem permissão para acessar órgãos governamentais`, opts({ parse_mode: 'Markdown' }));
       }
       return bot.sendMessage(chatId, `❌ Nenhum resultado válido (com usuário e senha) encontrado para \`${q}\``, opts({ parse_mode: 'Markdown' }));
     }
@@ -1100,7 +1100,7 @@ async function sendSmartResults(chatId, query, pool, threadId) {
     if (cleanedRows.length === 0) {
       if (smartLoadingMsg) bot.deleteMessage(chatId, smartLoadingMsg.message_id).catch(() => {});
       if (cleanedRows.govBlocked) {
-        return bot.sendMessage(chatId, `❌ Sites governamentais bloqueado no trial`, opts({ parse_mode: 'Markdown' }));
+        return bot.sendMessage(chatId, `❌ Usuários Trial não tem permissão para acessar órgãos governamentais`, opts({ parse_mode: 'Markdown' }));
       }
       return bot.sendMessage(chatId, `❌ Nenhum resultado válido (com usuário e senha) encontrado para \`${q}\``, opts({ parse_mode: 'Markdown' }));
     }
@@ -1206,7 +1206,7 @@ async function sendUserResults(chatId, query, pool, threadId) {
     const cleanedRows = await getUniqueValidRows(res.rows, 'full', chatId);
     if (cleanedRows.length === 0) {
       if (cleanedRows.govBlocked) {
-        return bot.sendMessage(chatId, `❌ Sites governamentais bloqueado no trial`, opts({ parse_mode: 'Markdown' }));
+        return bot.sendMessage(chatId, `❌ Usuários Trial não tem permissão para acessar órgãos governamentais`, opts({ parse_mode: 'Markdown' }));
       }
       return bot.sendMessage(chatId, `❌ Nenhum resultado válido (com usuário e senha) encontrado para usuário \`${q}\``, opts({ parse_mode: 'Markdown' }));
     }
@@ -1315,7 +1315,7 @@ async function sendIpResults(chatId, query, pool, threadId) {
     const cleanedRows = await getUniqueValidRows(res.rows, 'full', chatId);
     if (cleanedRows.length === 0) {
       if (cleanedRows.govBlocked) {
-        return bot.sendMessage(chatId, `❌ Sites governamentais bloqueado no trial`, opts({ parse_mode: 'Markdown' }));
+        return bot.sendMessage(chatId, `❌ Usuários Trial não tem permissão para acessar órgãos governamentais`, opts({ parse_mode: 'Markdown' }));
       }
       return bot.sendMessage(chatId, `❌ Nenhum resultado válido (com usuário e senha) encontrado para IP \`${q}\``, opts({ parse_mode: 'Markdown' }));
     }
@@ -1391,7 +1391,7 @@ async function sendInurlResults(chatId, query, pool, threadId) {
     const cleanedRows = await getUniqueValidRows(res.rows, 'full', chatId);
     if (cleanedRows.length === 0) {
       if (cleanedRows.govBlocked) {
-        return bot.sendMessage(chatId, `❌ Sites governamentais bloqueado no trial`, opts({ parse_mode: 'Markdown' }));
+        return bot.sendMessage(chatId, `❌ Usuários Trial não tem permissão para acessar órgãos governamentais`, opts({ parse_mode: 'Markdown' }));
       }
       return bot.sendMessage(chatId, `❌ Nenhum resultado válido (com usuário e senha) encontrado para inurl \`${q}\``, opts({ parse_mode: 'Markdown' }));
     }
@@ -1460,7 +1460,7 @@ async function sendInmailResults(chatId, query, pool, threadId) {
     const cleanedRows = await getUniqueValidRows(res.rows, 'full', chatId);
     if (cleanedRows.length === 0) {
       if (cleanedRows.govBlocked) {
-        return bot.sendMessage(chatId, `❌ Sites governamentais bloqueado no trial`, opts({ parse_mode: 'Markdown' }));
+        return bot.sendMessage(chatId, `❌ Usuários Trial não tem permissão para acessar órgãos governamentais`, opts({ parse_mode: 'Markdown' }));
       }
       return bot.sendMessage(chatId, `❌ Nenhum resultado válido (com usuário e senha) encontrado para inmail \`${q}\``, opts({ parse_mode: 'Markdown' }));
     }
@@ -1589,7 +1589,7 @@ async function sendCpfResults(chatId, query, pool, threadId) {
     const cleanedRows = await getUniqueValidRows(res.rows, 'full', chatId);
     if (cleanedRows.length === 0) {
       if (cleanedRows.govBlocked) {
-        return bot.sendMessage(chatId, `❌ Sites governamentais bloqueado no trial`, opts({ parse_mode: 'Markdown' }));
+        return bot.sendMessage(chatId, `❌ Usuários Trial não tem permissão para acessar órgãos governamentais`, opts({ parse_mode: 'Markdown' }));
       }
       return bot.sendMessage(chatId, `❌ Nenhum resultado válido (com usuário e senha) encontrado para CPF \`${raw}\``, opts({ parse_mode: 'Markdown' }));
     }
@@ -1710,7 +1710,7 @@ async function sendCnpjResults(chatId, query, pool, threadId) {
     const cleanedRows = await getUniqueValidRows(res.rows, 'full', chatId);
     if (cleanedRows.length === 0) {
       if (cleanedRows.govBlocked) {
-        return bot.sendMessage(chatId, `❌ Sites governamentais bloqueado no trial`, opts({ parse_mode: 'Markdown' }));
+        return bot.sendMessage(chatId, `❌ Usuários Trial não tem permissão para acessar órgãos governamentais`, opts({ parse_mode: 'Markdown' }));
       }
       return bot.sendMessage(chatId, `❌ Nenhum resultado válido (com usuário e senha) encontrado para CNPJ \`${raw}\``, opts({ parse_mode: 'Markdown' }));
     }
@@ -4530,7 +4530,7 @@ const mainMenuButtons = [
       if (format === 'chk' || format === 'chk2') {
         const access = await checkUserAccess(chatId, cbIsGroup);
         if (access.status !== 'premium') {
-          return bot.sendMessage(chatId, '⚠️ Exportar nos formatos CHK e CHK2 é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
+          return bot.sendMessage(chatId, '⚠️ Exportar nos formatos USER:PASS e URL:USER:PASS é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
         }
       }
 
