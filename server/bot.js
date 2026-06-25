@@ -65,7 +65,7 @@ const ADMIN_ID = process.env.TELEGRAM_CHAT_ID ? parseInt(process.env.TELEGRAM_CH
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID ? parseInt(process.env.TELEGRAM_CHAT_ID) : ADMIN_ID; // Chat para notificações do Portal SISP
 let maintenanceMode = false; // Modo manutenção global
 const TRIAL_MAX_SEARCHES = 999999;
-const TRIAL_MAX_RESULTS = 100;
+const TRIAL_MAX_RESULTS = 20;
 const GROUP_MAX_RESULTS = 50;
 
 function getPlanLimit(access) {
