@@ -69,8 +69,13 @@ const GROUP_MAX_RESULTS = 50;
 
 function getPlanLimit(access) {
   if (access.status === 'premium' && access.plan) {
-    if (access.plan === 'STARTER') return 5000;
-    if (access.plan === 'PRO') return 20000;
+    if (access.plan === 'STARTER') return 250;
+    if (access.plan === 'PREMIUM') return 500;
+    if (access.plan === 'VIP') return 1000;
+    if (access.plan === 'ECONOMIC') return 300;
+    if (access.plan === 'ADVANCED') return 800;
+    if (access.plan === 'ULTRA') return 5000;
+    if (access.plan === 'ELITE') return 50000;
   }
   if (access.status === 'premium') return Infinity;
   if (access.status === 'group') return GROUP_MAX_RESULTS;
@@ -115,9 +120,13 @@ if (stripeKey && stripeKey !== 'sua_chave_secreta_stripe') {
 
 // Planos: [label, dias, preço em centavos]
 const PLANS = [
-  { label: '1 Dia', days: 1,  priceCents: 1000,  emoji: '⚡' },
-  { label: '50 Dias', days: 50, priceCents: 5000,  emoji: '🔥' },
-  { label: '30 Dias', days: 30, priceCents: 10000, emoji: '💎' },
+  { label: 'STARTER', days: 7,  priceCents: 412,  emoji: '🚀' },
+  { label: 'PREMIUM', days: 15, priceCents: 820,  emoji: '⭐' },
+  { label: 'VIP', days: 30, priceCents: 1370, emoji: '👑' },
+  { label: 'ECONOMIC', days: 1, priceCents: 545, emoji: '💎' },
+  { label: 'ADVANCED', days: 7, priceCents: 1095, emoji: '🔹' },
+  { label: 'ULTRA', days: 30, priceCents: 1920, emoji: '🔹' },
+  { label: 'ELITE', days: null, priceCents: 8250, emoji: '👑' },
 ];
 
 async function getMaxRows(chatId) {
@@ -3043,40 +3052,64 @@ const mainMenuButtons = [
           let planLabel = '';
 
           if (plan === 'starter') {
-            days = 30;
+            days = 7;
             validSeconds = days * 86400;
             planLabel = '🚀 STARTER';
-          } else if (plan === 'pro') {
+          } else if (plan === 'premium') {
+            days = 15;
+            validSeconds = days * 86400;
+            planLabel = '⭐ PREMIUM';
+          } else if (plan === 'vip') {
             days = 30;
             validSeconds = days * 86400;
-            planLabel = '⭐ PRO';
-          } else if (plan === 'power') {
+            planLabel = '👑 VIP';
+          } else if (plan === 'economic') {
+            days = 1;
+            validSeconds = days * 86400;
+            planLabel = '💎 ECONOMIC';
+          } else if (plan === 'advanced') {
+            days = 7;
+            validSeconds = days * 86400;
+            planLabel = '🔹 ADVANCED';
+          } else if (plan === 'ultra') {
+            days = 30;
+            validSeconds = days * 86400;
+            planLabel = '🔹 ULTRA';
+          } else if (plan === 'elite') {
             validSeconds = null;
-            planLabel = '🔥 POWER';
+            planLabel = '👑 ELITE';
           } else {
             return bot.sendMessage(chatId,
-              `❌ *Uso:* \`/genkey starter\`, \`/genkey pro\` ou \`/genkey power\`\n\n` +
+              `❌ *Uso:* \`/genkey starter\`, \`/genkey premium\`, \`/genkey vip\`, \`/genkey economic\`, \`/genkey advanced\`, \`/genkey ultra\` ou \`/genkey elite\`\n\n` +
               `💎 *PLANOS DISPONÍVEIS*\n\n` +
               `╔════════════════════════════════════╗\n` +
-              `║   🚀 *STARTER* - R$ 20,00          ║\n` +
-              `║   📊 5.000 Resultados por busca    ║\n` +
-              `║   ⏱️ Acesso 30 dias                ║\n` +
-              `║   ✓ Suporte via Telegram           ║\n` +
+              `║   🚀 *STARTER* — R\$ 4,12           ║\n` +
+              `║   📆 7 dias | 🔍 15/dia | 📄 250   ║\n` +
               `╚════════════════════════════════════╝\n\n` +
               `╔════════════════════════════════════╗\n` +
-              `║   ⭐ *PRO* - R$ 50,00              ║\n` +
-              `║   📊 20.000 Resultados por busca   ║\n` +
-              `║   ⏱️ Acesso 30 dias                ║\n` +
-              `║   ✓ Suporte prioritário            ║\n` +
-              `║   ✓ Atualizações exclusivas        ║\n` +
+              `║   ⭐ *PREMIUM* — R\$ 8,20           ║\n` +
+              `║   📆 15 dias | 🔍 50/dia | 📄 500  ║\n` +
               `╚════════════════════════════════════╝\n\n` +
               `╔════════════════════════════════════╗\n` +
-              `║   🔥 *POWER* - R$ 100,00           ║\n` +
-              `║   📊 Resultados ILIMITADOS         ║\n` +
-              `║   ⏱️ Acesso VITALÍCIO              ║\n` +
-              `║   ✓ Suporte PREMIUM via API        ║\n` +
-              `║   ✓ Acesso a todas as ferramentas  ║\n` +
-              `║   ✓ Prioridade máxima             ║\n` +
+              `║   👑 *VIP* — R\$ 13,70              ║\n` +
+              `║   📆 30 dias | 🔍 200/dia | 📄 1000║\n` +
+              `╚════════════════════════════════════╝\n\n` +
+              `╔════════════════════════════════════╗\n` +
+              `║   💎 *ECONOMIC* — R\$ 5,45          ║\n` +
+              `║   📆 1 dia | 🔍 50/dia | 📄 300    ║\n` +
+              `╚════════════════════════════════════╝\n\n` +
+              `╔════════════════════════════════════╗\n` +
+              `║   🔹 *ADVANCED* — R\$ 10,95         ║\n` +
+              `║   📆 7 dias | 🔍 100/dia | 📄 800  ║\n` +
+              `╚════════════════════════════════════╝\n\n` +
+              `╔════════════════════════════════════╗\n` +
+              `║   🔹 *ULTRA* — R\$ 19,20            ║\n` +
+              `║   📆 30 dias | 🔍 500/dia | 📄 5000║\n` +
+              `╚════════════════════════════════════╝\n\n` +
+              `╔════════════════════════════════════╗\n` +
+              `║   👑 *ELITE* — R\$ 82,50            ║\n` +
+              `║   ♾️ Vitalício | 🔍 Ilimitadas      ║\n` +
+              `║   📄 50000 resultados              ║\n` +
               `╚════════════════════════════════════╝`,
               opts({ parse_mode: 'Markdown' })
             );
@@ -4643,33 +4676,45 @@ const mainMenuButtons = [
       return bot.sendMessage(chatId,
         `💎 *PLANOS DISPONÍVEIS*\n\n` +
         `╔════════════════════════════════════╗\n` +
-        `║   🚀 *STARTER* - R$ 20,00          ║\n` +
-        `║   📊 5.000 Resultados por busca    ║\n` +
-        `║   ⏱️ Acesso 30 dias                ║\n` +
-        `║   ✓ Suporte via Telegram           ║\n` +
+        `║ 🚀 *STARTER* — R\$ 4,12             ║\n` +
+        `║ 📆 7 dias | 🔍 15/dia | 📄 250     ║\n` +
         `╚════════════════════════════════════╝\n\n` +
         `╔════════════════════════════════════╗\n` +
-        `║   ⭐ *PRO* - R$ 50,00              ║\n` +
-        `║   📊 20.000 Resultados por busca   ║\n` +
-        `║   ⏱️ Acesso 30 dias                ║\n` +
-        `║   ✓ Suporte prioritário            ║\n` +
-        `║   ✓ Atualizações exclusivas        ║\n` +
+        `║ ⭐ *PREMIUM* — R\$ 8,20             ║\n` +
+        `║ 📆 15 dias | 🔍 50/dia | 📄 500    ║\n` +
         `╚════════════════════════════════════╝\n\n` +
         `╔════════════════════════════════════╗\n` +
-        `║   🔥 *POWER* - R$ 100,00           ║\n` +
-        `║   📊 Resultados ILIMITADOS         ║\n` +
-        `║   ⏱️ Acesso VITALÍCIO              ║\n` +
-        `║   ✓ Suporte PREMIUM via API        ║\n` +
-        `║   ✓ Acesso a todas as ferramentas  ║\n` +
-        `║   ✓ Prioridade máxima             ║\n` +
+        `║ 👑 *VIP* — R\$ 13,70                ║\n` +
+        `║ 📆 30 dias | 🔍 200/dia | 📄 1000  ║\n` +
+        `╚════════════════════════════════════╝\n\n` +
+        `╔════════════════════════════════════╗\n` +
+        `║ 💎 *ECONOMIC* — R\$ 5,45            ║\n` +
+        `║ 📆 1 dia | 🔍 50/dia | 📄 300      ║\n` +
+        `╚════════════════════════════════════╝\n\n` +
+        `╔════════════════════════════════════╗\n` +
+        `║ 🔹 *ADVANCED* — R\$ 10,95           ║\n` +
+        `║ 📆 7 dias | 🔍 100/dia | 📄 800    ║\n` +
+        `╚════════════════════════════════════╝\n\n` +
+        `╔════════════════════════════════════╗\n` +
+        `║ 🔹 *ULTRA* — R\$ 19,20              ║\n` +
+        `║ 📆 30 dias | 🔍 500/dia | 📄 5000  ║\n` +
+        `╚════════════════════════════════════╝\n\n` +
+        `╔════════════════════════════════════╗\n` +
+        `║ 👑 *ELITE* — R\$ 82,50              ║\n` +
+        `║ ♾️ Vitalício | 🔍 Ilimitadas        ║\n` +
+        `║ 📄 50000 resultados                ║\n` +
         `╚════════════════════════════════════╝`,
         opts({
           parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
               [{ text: '🛒 COMPRAR STARTER', url: 'https://t.me/controletotal', style: 'primary' }],
-              [{ text: '🛒 COMPRAR PRO', url: 'https://t.me/controletotal', style: 'primary' }],
-              [{ text: '🛒 COMPRAR POWER', url: 'https://t.me/controletotal', style: 'primary' }],
+              [{ text: '🛒 COMPRAR PREMIUM', url: 'https://t.me/controletotal', style: 'primary' }],
+              [{ text: '🛒 COMPRAR VIP', url: 'https://t.me/controletotal', style: 'primary' }],
+              [{ text: '🛒 COMPRAR ECONOMIC', url: 'https://t.me/controletotal', style: 'primary' }],
+              [{ text: '🛒 COMPRAR ADVANCED', url: 'https://t.me/controletotal', style: 'primary' }],
+              [{ text: '🛒 COMPRAR ULTRA', url: 'https://t.me/controletotal', style: 'primary' }],
+              [{ text: '🛒 COMPRAR ELITE', url: 'https://t.me/controletotal', style: 'primary' }],
               [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
@@ -4696,14 +4741,26 @@ const mainMenuButtons = [
         
         const planTable =
           `╔════════════════════════════════╗\n` +
-          `║ 🚀 *STARTER* — R$ 20,00        ║\n` +
-          `║ 📊 5.000 resultados, 30 dias   ║\n` +
+          `║ 🚀 *STARTER* — R\$ 4,12         ║\n` +
+          `║ 📆 7d | 🔍 15/dia | 📄 250     ║\n` +
           `╠════════════════════════════════╣\n` +
-          `║ ⭐ *PRO* — R$ 50,00            ║\n` +
-          `║ 📊 20.000 resultados, 30 dias  ║\n` +
+          `║ ⭐ *PREMIUM* — R\$ 8,20         ║\n` +
+          `║ 📆 15d | 🔍 50/dia | 📄 500    ║\n` +
           `╠════════════════════════════════╣\n` +
-          `║ 🔥 *POWER* — R$ 100,00         ║\n` +
-          `║ 📊 Ilimitado, Vitalício        ║\n` +
+          `║ 👑 *VIP* — R\$ 13,70            ║\n` +
+          `║ 📆 30d | 🔍 200/dia | 📄 1000  ║\n` +
+          `╠════════════════════════════════╣\n` +
+          `║ 💎 *ECONOMIC* — R\$ 5,45        ║\n` +
+          `║ 📆 1d | 🔍 50/dia | 📄 300     ║\n` +
+          `╠════════════════════════════════╣\n` +
+          `║ 🔹 *ADVANCED* — R\$ 10,95       ║\n` +
+          `║ 📆 7d | 🔍 100/dia | 📄 800    ║\n` +
+          `╠════════════════════════════════╣\n` +
+          `║ 🔹 *ULTRA* — R\$ 19,20          ║\n` +
+          `║ 📆 30d | 🔍 500/dia | 📄 5000  ║\n` +
+          `╠════════════════════════════════╣\n` +
+          `║ 👑 *ELITE* — R\$ 82,50          ║\n` +
+          `║ ♾️ Vitalício | 🔍 Ilimitadas   ║\n` +
           `╚════════════════════════════════╝`;
         
         return bot.sendMessage(chatId,
