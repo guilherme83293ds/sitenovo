@@ -736,6 +736,7 @@ const groupChatsLogged = new Set(); // chatId já logado (evita spam no console)
 const groupOwners = new Map(); // chatId -> userId do owner/admin
 // Set para controlar stop do checker
 const checkerStopSet = new Set();
+const monitoringStates = new Map(); // chatId -> { type: 'email'|'username' }
 
 
 // ══════════════════════════════════════════════════
@@ -2898,6 +2899,7 @@ const mainMenuButtons = [
               [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
               [{ text: '🎧 SUPORTE', callback_data: 'support_menu', style: 'primary' }],
               [{ text: '📜 COMANDOS', callback_data: 'list_commands', style: 'primary' }],
+              [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
               [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
               [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
               [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
@@ -4229,6 +4231,93 @@ const mainMenuButtons = [
       }
 
 
+      // Verifica se está aguardando valor para monitoramento
+      const monitoringState = monitoringStates.get(chatId);
+      if (monitoringState) {
+        const monitorValue = text.trim();
+        if (monitorValue.length < 1) {
+          bot.sendMessage(chatId, `❌ Valor inválido. Por favor, digite um valor válido.`, opts());
+          return;
+        }
+        monitoringStates.delete(chatId);
+        
+        const type = monitoringState.type;
+        
+        if (type === 'email') {
+          await bot.sendMessage(chatId, `📧 *Verificando email...*\n\n⏳ Consultando bases de dados...`, opts({ parse_mode: 'Markdown' }));
+          try {
+            const data = await searchByEmail(monitorValue);
+            if (!data || !data.stealers || data.stealers.length === 0) {
+              return bot.sendMessage(chatId, `✅ *Email não encontrado em breaches*\n\nO email \`${monitorValue}\` aparentemente está seguro.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+            }
+            let totalDevices = data.stealers.length;
+            let totalCorporate = data.total_corporate_services || 0;
+            let totalUser = data.total_user_services || 0;
+            let msg = `⚠️ *Informações encontradas para:* \`${monitorValue}\`\n\n`;
+            msg += `📱 *Dispositivos infectados:* ${totalDevices}\n`;
+            msg += `🏢 *Serviços corporativos:* ${totalCorporate}\n`;
+            msg += `👤 *Serviços de usuário:* ${totalUser}\n\n`;
+            
+            const recent = data.stealers.slice(0, 3);
+            recent.forEach((s, i) => {
+              const compDate = s.date_compromised ? new Date(s.date_compromised).toLocaleDateString('pt-BR') : 'N/A';
+              msg += `*Dispositivo ${i + 1}:* ${s.computer_name || 'N/A'}\n`;
+              msg += `  🖥 OS: ${s.operating_system || 'N/A'}\n`;
+              msg += `  🌐 IP: ${s.ip || 'N/A'}\n`;
+              msg += `  📅 Data: ${compDate}\n`;
+              if (s.top_logins && s.top_logins.length > 0) {
+                msg += `  🔑 Logins: ${s.top_logins.slice(0, 3).join(', ')}\n`;
+              }
+              msg += `\n`;
+            });
+            
+            if (data.stealers.length > 3) {
+              msg += `... e mais ${data.stealers.length - 3} dispositivo(s)\n\n`;
+            }
+            
+            return bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+          } catch (e) {
+            return bot.sendMessage(chatId, `❌ Erro ao verificar: ${e.message}`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+          }
+        }
+        
+        if (type === 'username') {
+          await bot.sendMessage(chatId, `👤 *Verificando username...*\n\n⏳ Consultando bases de dados...`, opts({ parse_mode: 'Markdown' }));
+          try {
+            const data = await searchByUsername(monitorValue);
+            if (!data || !data.stealers || data.stealers.length === 0) {
+              return bot.sendMessage(chatId, `✅ *Username não encontrado em breaches*\n\nO username \`${monitorValue}\` aparentemente está seguro.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+            }
+            let totalDevices = data.stealers.length;
+            let msg = `⚠️ *Informações encontradas para:* \`${monitorValue}\`\n\n`;
+            msg += `📱 *Dispositivos infectados:* ${totalDevices}\n\n`;
+            
+            const recent = data.stealers.slice(0, 3);
+            recent.forEach((s, i) => {
+              const compDate = s.date_compromised ? new Date(s.date_compromised).toLocaleDateString('pt-BR') : 'N/A';
+              msg += `*Dispositivo ${i + 1}:* ${s.computer_name || 'N/A'}\n`;
+              msg += `  🖥 OS: ${s.operating_system || 'N/A'}\n`;
+              msg += `  🌐 IP: ${s.ip || 'N/A'}\n`;
+              msg += `  📅 Data: ${compDate}\n`;
+              if (s.top_logins && s.top_logins.length > 0) {
+                msg += `  🔑 Logins: ${s.top_logins.slice(0, 3).join(', ')}\n`;
+              }
+              msg += `\n`;
+            });
+            
+            if (data.stealers.length > 3) {
+              msg += `... e mais ${data.stealers.length - 3} dispositivo(s)\n\n`;
+            }
+            
+            return bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+          } catch (e) {
+            return bot.sendMessage(chatId, `❌ Erro ao verificar: ${e.message}`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+          }
+        }
+        
+        return bot.sendMessage(chatId, `❌ Tipo de monitoramento inválido.`, opts());
+      }
+
       // Mensagem sem comando — tenta ativar como key
       // Em grupos, NÃO tenta ativar key (silencia — evita "key inválida" no grupo)
       if (isGroup) return;
@@ -4409,6 +4498,7 @@ const mainMenuButtons = [
             [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
             [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
             [{ text: '🎧 SUPORTE', callback_data: 'support_menu', style: 'primary' }],
+            [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
             [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
             [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
             [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
@@ -4416,6 +4506,52 @@ const mainMenuButtons = [
         }
       }).catch(() => {});
       return;
+    }
+
+    // Botão MONITORAR — Monitoramento em tempo real
+    if (data === 'monitor_menu') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      return bot.sendMessage(chatId,
+        `🔔 *MONITORAMENTO EM TEMPO REAL*\n\n` +
+        `Escolha o que deseja consultar:\n\n` +
+        `📧 *EMAIL* - Verificar vazamentos\n` +
+        `👤 *USERNAME* - Verificar vazamentos`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '📧 MONITORAR EMAIL', callback_data: 'mon_email', style: 'primary' }],
+              [{ text: '👤 MONITORAR USERNAME', callback_data: 'mon_username', style: 'primary' }],
+              [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+            ]
+          }
+        })
+      );
+    }
+
+    // Handler para monitorar EMAIL
+    if (data === 'mon_email') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      monitoringStates.set(chatId, { type: 'email' });
+      return bot.sendMessage(chatId,
+        `📧 *MONITORAR EMAIL*\n\n` +
+        `Digite o email que deseja verificar:`,
+        opts({ parse_mode: 'Markdown' })
+      );
+    }
+
+    // Handler para monitorar USERNAME
+    if (data === 'mon_username') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      monitoringStates.set(chatId, { type: 'username' });
+      return bot.sendMessage(chatId,
+        `👤 *MONITORAR USERNAME*\n\n` +
+        `Digite o username que deseja verificar:`,
+        opts({ parse_mode: 'Markdown' })
+      );
     }
 
     // Botão SUPORTE
@@ -5066,6 +5202,7 @@ const mainMenuButtons = [
             [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
             [{ text: '📋 CHECKERS (PREMIUM)', callback_data: 'checkers_menu', style: 'primary' }],
             [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
+              [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
               [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
               [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
               [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
@@ -5088,6 +5225,7 @@ const mainMenuButtons = [
             [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
             [{ text: '📋 CHECKERS (PREMIUM)', callback_data: 'checkers_menu', style: 'primary' }],
             [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
+            [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
             [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
             [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
             [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
