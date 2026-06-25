@@ -6,6 +6,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --legacy-peer-deps --omit=dev
 
 COPY server ./server
+COPY planos.jpg ./planos.jpg
 
 ENV NODE_ENV=production
 ENV PORT=3001
