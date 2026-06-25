@@ -2853,17 +2853,18 @@ export function setupBot(app, pool, writePool, publicPool) {
             `• 📝 *Não tem chave?* Cadastre\\-se abaixo\n\n` +
             `_Use os botões abaixo para continuar\\._`;
 
-          return bot.sendMessage(chatId, loginText,
-            opts({
-              parse_mode: 'MarkdownV2',
-              reply_markup: {
-                inline_keyboard: [
-                  [{ text: '🔑 FAZER LOGIN', callback_data: 'login_start', style: 'primary' }],
-                  [{ text: '📝 FAZER CADASTRO', callback_data: 'register_start', style: 'primary' }]
-                ]
-              }
-            })
-          );
+return bot.sendMessage(chatId, loginText,
+             opts({
+               parse_mode: 'MarkdownV2',
+               reply_markup: {
+                 inline_keyboard: [
+                   [{ text: '🔑 FAZER LOGIN', callback_data: 'login_start', style: 'primary' }],
+                   [{ text: '📝 FAZER CADASTRO', callback_data: 'register_start', style: 'primary' }],
+                   [{ text: '🎧 SUPORTE', callback_data: 'support_menu', style: 'primary' }]
+                 ]
+               }
+             })
+           );
         }
 
         // ── LOGADO: mostra menu principal ──
@@ -2891,12 +2892,13 @@ export function setupBot(app, pool, writePool, publicPool) {
           `🛠️ /FERRAMENTAS - Ver todas as tools\n` +
           `🔎 /CONSULTARDADOS - Consultas avançadas`;
 
-        const mainMenuButtons = [
+const mainMenuButtons = [
               [{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }],
               [{ text: '🚀 PUXAR LOGINS', callback_data: 'puxar_logins', style: 'primary' }],
               [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
               [{ text: '📋 CHECKERS (PREMIUM)', callback_data: 'checkers_menu', style: 'primary' }],
               [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
+              [{ text: '🎧 SUPORTE', callback_data: 'support_menu', style: 'primary' }],
               [{ text: '📜 COMANDOS', callback_data: 'list_commands', style: 'primary' }],
               [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
               [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
@@ -4535,6 +4537,7 @@ export function setupBot(app, pool, writePool, publicPool) {
             [{ text: '🚀 PUXAR LOGINS', callback_data: 'puxar_logins', style: 'primary' }],
             [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
             [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
+            [{ text: '🎧 SUPORTE', callback_data: 'support_menu', style: 'primary' }],
             [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
             [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
             [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
@@ -4542,6 +4545,34 @@ export function setupBot(app, pool, writePool, publicPool) {
           ]
         }
       }).catch(() => {});
+      return;
+    }
+
+    // Botão SUPORTE
+    if (data === 'support_menu') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      return bot.sendMessage(chatId, 
+        `🎧 *SUPORTE E AJUDA*\n\n` +
+        `Precisando de assistência? Entre em contato diretamente com o suporte:\n\n` +
+        `👨‍💻 *Suporte Técnico:* ${OWNER_PROFILE}\n\n` +
+        `📝 *Como usar o bot:*\n` +
+        `• Use /start para acessar o menu principal\n` +
+        `• Use /login para acessar com credenciais\n` +
+        `• Use /register para criar uma conta\n` +
+        `• Use /key SUA-CHAVE para ativar acesso premium\n\n` +
+        `⚠️ *Horário de suporte:* 24/7\n` +
+        `💬 *Resposta geralmente em menos de 1 hora*`,
+        opts({ 
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '💬 CONVERSAR COM SUPORTE', url: OWNER_PROFILE }],
+              [{ text: '🏠 VOLTAR AO MENU', callback_data: 'cmd_menu' }]
+            ]
+          }
+        })
+      );
       return;
     }
 
