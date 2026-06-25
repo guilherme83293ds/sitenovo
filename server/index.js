@@ -513,13 +513,16 @@ app.get('/api/stats', async (req, res) => {
     
     // Estimativa instantânea para dados diários
     const today = Math.floor(total * 0.0015);
+    const hudsonRockEstimate = Math.floor(total * 0.1);
     const sources = [
       { name: 'stealer_logs', count: Math.floor(total * 0.4) },
       { name: 'combolists', count: Math.floor(total * 0.3) },
-      { name: 'databreaches', count: Math.floor(total * 0.2) }
+      { name: 'databreaches', count: Math.floor(total * 0.2) },
+      { name: 'hudsonrock', count: hudsonRockEstimate }
     ];
+    const totalWithHudsonRock = total + hudsonRockEstimate;
     
-    res.json({ total, today, sources });
+    res.json({ total: totalWithHudsonRock, today, sources });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

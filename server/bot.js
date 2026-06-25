@@ -736,8 +736,6 @@ const groupChatsLogged = new Set(); // chatId já logado (evita spam no console)
 const groupOwners = new Map(); // chatId -> userId do owner/admin
 // Set para controlar stop do checker
 const checkerStopSet = new Set();
-// Map para rastrear monitoramento de usuários
-const monitoringStates = new Map(); // chatId -> { type: 'email'|'password'|'phone'|'domain'|'url' }
 
 
 // ══════════════════════════════════════════════════
@@ -1931,7 +1929,7 @@ async function sendCheckDomainResults(chatId, query, pool, threadId) {
 // ══════════════════════════════════════════════════
 export function isMaintenance() { return maintenanceMode; }
 
-export function setupBot(app, pool, writePool, publicPool) {
+export async function setupBot(app, pool, writePool, publicPool) {
   if (!TOKEN) {
     console.warn('⚠️ TELEGRAM_TOKEN não definido. Bot desativado.');
     return;
@@ -2900,7 +2898,6 @@ const mainMenuButtons = [
               [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
               [{ text: '🎧 SUPORTE', callback_data: 'support_menu', style: 'primary' }],
               [{ text: '📜 COMANDOS', callback_data: 'list_commands', style: 'primary' }],
-              [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
               [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
               [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
               [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
@@ -4231,132 +4228,6 @@ const mainMenuButtons = [
         return handler();
       }
 
-      // Verifica se está aguardando valor para monitoramento
-      const monitoringState = monitoringStates.get(chatId);
-      if (monitoringState) {
-        const monitorValue = text.trim();
-        if (monitorValue.length < 1) {
-          bot.sendMessage(chatId, `❌ Valor inválido. Por favor, digite um valor válido.`, opts());
-          return;
-        }
-        monitoringStates.delete(chatId);
-        
-        // Processa diferentes tipos de monitoramento
-        const monitorRoutes = {
-          email: async () => {
-            bot.sendMessage(chatId, `📧 *Verificando email:* \`${monitorValue}\`\n\n⏳ Processando...`, opts({ parse_mode: 'Markdown' }));
-            try {
-              // Integração com Have I Been Pwned API
-              const ctrl = new AbortController();
-              const timeoutId = setTimeout(() => ctrl.abort(), 10000);
-              const res = await fetch(`https://haveibeenpwned.com/api/v3/breachedaccount/${encodeURIComponent(monitorValue)}`, {
-                signal: ctrl.signal,
-                headers: { 'User-Agent': 'AssemblyLogs-Bot' }
-              });
-              clearTimeout(timeoutId);
-              
-              if (res.status === 404) {
-                return bot.sendMessage(chatId, `✅ *Email não encontrado em breaches*\n\nO email \`${monitorValue}\` aparentemente está seguro.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-              } else if (res.status === 200) {
-                const breaches = await res.json();
-                let breachText = `⚠️ *Email encontrado em ${breaches.length} breach(s):*\n\n`;
-                breaches.slice(0, 10).forEach((b, i) => {
-                  breachText += `${i + 1}. *${b.Name}* (${new Date(b.BreachDate).toLocaleDateString('pt-BR')})\n`;
-                  breachText += `   _Tipos: ${b.DataClasses.join(', ')}_\n\n`;
-                });
-                return bot.sendMessage(chatId, breachText + `📊 *Status:* ⚠️ Email comprometido\n\n💡 Mude suas senhas imediatamente!`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-              } else {
-                return bot.sendMessage(chatId, `⚠️ Serviço temporariamente indisponível. Tente novamente em alguns momentos.`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-              }
-            } catch (e) {
-              return bot.sendMessage(chatId, `❌ Erro ao verificar email: ${e.message}`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-            }
-          },
-          
-          password: async () => {
-            bot.sendMessage(chatId, `🔐 *Verificando senha...*\n\n⏳ Processando...`, opts({ parse_mode: 'Markdown' }));
-            try {
-              // Integração com Have I Been Pwned Passwords API
-              const crypto = require('crypto');
-              const hash = crypto.createHash('sha1').update(monitorValue).digest('hex').toUpperCase();
-              const prefix = hash.substring(0, 5);
-              const ctrl = new AbortController();
-              const timeoutId = setTimeout(() => ctrl.abort(), 10000);
-              const res = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`, {
-                signal: ctrl.signal,
-                headers: { 'User-Agent': 'AssemblyLogs-Bot' }
-              });
-              clearTimeout(timeoutId);
-              const data = await res.text();
-              const found = data.split('\r\n').find(line => line.startsWith(hash.substring(5)));
-              
-              if (found) {
-                const count = parseInt(found.split(':')[1]);
-                return bot.sendMessage(chatId, `⚠️ *SENHA COMPROMETIDA*\n\nEsta senha foi encontrada em *${count.toLocaleString('pt-BR')}* breaches.\n\n🔐 *Recomendação:* Mude esta senha imediatamente!`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRA', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-              } else {
-                return bot.sendMessage(chatId, `✅ *SENHA SEGURA*\n\nEsta senha não foi encontrada em nenhum breach conhecido.\n\n💡 Mantenha esta senha em sigilo!`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRA', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-              }
-            } catch (e) {
-              return bot.sendMessage(chatId, `❌ Erro ao verificar senha: ${e.message}`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-            }
-          },
-          
-          phone: async () => {
-            bot.sendMessage(chatId, `📞 *Verificando telefone:* \`${monitorValue}\`\n\n⏳ Processando...`, opts({ parse_mode: 'Markdown' }));
-            // Processa telefone (validação básica e verificação em banco de dados local)
-            try {
-              const query = `SELECT COUNT(*) as count FROM credentials WHERE TELEFONE LIKE $1 LIMIT 1`;
-              const result = await pool.query(query, [`%${monitorValue}%`]);
-              const count = result.rows[0]?.count || 0;
-              
-              if (count > 0) {
-                return bot.sendMessage(chatId, `⚠️ *Telefone encontrado em ${count} registro(s)*\n\n📞 Telefone: \`${monitorValue}\`\n\n🚨 Este telefone foi encontrado em nosso banco de dados de breaches.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-              } else {
-                return bot.sendMessage(chatId, `✅ *Telefone não encontrado em breaches*\n\n📞 Telefone: \`${monitorValue}\`\n\n✓ Este telefone não foi encontrado em breaches conhecidos.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-              }
-            } catch (e) {
-              return bot.sendMessage(chatId, `❌ Erro ao verificar telefone: ${e.message}`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-            }
-          },
-          
-          domain: async () => {
-            bot.sendMessage(chatId, `🌐 *Verificando domínio:* \`${monitorValue}\`\n\n⏳ Processando...`, opts({ parse_mode: 'Markdown' }));
-            try {
-              const dns = require('dns').promises;
-              const records = await dns.resolve4(monitorValue).catch(() => null);
-              
-              if (!records) {
-                return bot.sendMessage(chatId, `❌ *Domínio não encontrado*\n\n🌐 Domínio: \`${monitorValue}\`\n\nO domínio não está resolvendo ou não existe.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-              } else {
-                return bot.sendMessage(chatId, `✅ *Domínio ativo*\n\n🌐 Domínio: \`${monitorValue}\`\n📍 IPs: ${records.join(', ')}\n\nO domínio está registrado e ativo.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-              }
-            } catch (e) {
-              return bot.sendMessage(chatId, `❌ Erro ao verificar domínio: ${e.message}`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-            }
-          },
-          
-          url: async () => {
-            bot.sendMessage(chatId, `🔗 *Verificando URL:* \`${monitorValue}\`\n\n⏳ Processando...`, opts({ parse_mode: 'Markdown' }));
-            try {
-              const ctrl = new AbortController();
-              const timeoutId = setTimeout(() => ctrl.abort(), 10000);
-              const res = await fetch(monitorValue, { signal: ctrl.signal, method: 'HEAD' }).catch(() => null);
-              clearTimeout(timeoutId);
-              
-              if (!res) {
-                return bot.sendMessage(chatId, `⚠️ *URL indisponível*\n\n🔗 URL: \`${monitorValue}\`\n\nA URL não está respondendo.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRA', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-              } else {
-                return bot.sendMessage(chatId, `✅ *URL disponível*\n\n🔗 URL: \`${monitorValue}\`\n📊 Status: ${res.status} ${res.statusText}\n\nA URL está respondendo normalmente.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRA', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-              }
-            } catch (e) {
-              return bot.sendMessage(chatId, `❌ Erro ao verificar URL: ${e.message}`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-            }
-          }
-        };
-        
-        const handler = monitorRoutes[monitoringState.type];
-        return handler ? handler() : bot.sendMessage(chatId, `❌ Tipo de monitoramento inválido.`, opts());
-      }
 
       // Mensagem sem comando — tenta ativar como key
       // Em grupos, NÃO tenta ativar key (silencia — evita "key inválida" no grupo)
@@ -4538,7 +4409,6 @@ const mainMenuButtons = [
             [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
             [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
             [{ text: '🎧 SUPORTE', callback_data: 'support_menu', style: 'primary' }],
-            [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
             [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
             [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
             [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
@@ -4793,93 +4663,7 @@ const mainMenuButtons = [
       );
     }
 
-    // Botão MONITORAR — Monitoramento em tempo real
-    if (data === 'monitor_menu') {
-      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
-      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      return bot.sendMessage(chatId,
-        `🔔 *MONITORAMENTO EM TEMPO REAL*\n\n` +
-        `Escolha o que deseja monitorar:\n\n` +
-        `📧 *EMAIL* - Verificar se está em breaches\n` +
-        `🔐 *SENHA* - Verificar se foi comprometida\n` +
-        `📞 *TELEFONE* - Monitorar atividades\n` +
-        `🌐 *DOMÍNIO* - Verificar status e DNS\n` +
-        `🔗 *URL* - Verificar disponibilidade e segurança`,
-        opts({
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '📧 MONITORAR EMAIL', callback_data: 'mon_email', style: 'primary' }],
-              [{ text: '🔐 MONITORAR SENHA', callback_data: 'mon_password', style: 'primary' }],
-              [{ text: '📞 MONITORAR TELEFONE', callback_data: 'mon_phone', style: 'primary' }],
-              [{ text: '🌐 MONITORAR DOMÍNIO', callback_data: 'mon_domain', style: 'primary' }],
-              [{ text: '🔗 MONITORAR URL', callback_data: 'mon_url', style: 'primary' }],
-              [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
-            ]
-          }
-        })
-      );
-    }
 
-    // Handler para monitorar EMAIL
-    if (data === 'mon_email') {
-      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
-      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      monitoringStates.set(chatId, { action: 'monitor_email' });
-      return bot.sendMessage(chatId,
-        `📧 *MONITORAR EMAIL*\n\n` +
-        `Digite o email que deseja monitorar:`,
-        opts({ parse_mode: 'Markdown' })
-      );
-    }
-
-    // Handler para monitorar SENHA
-    if (data === 'mon_password') {
-      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
-      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      monitoringStates.set(chatId, { action: 'monitor_password' });
-      return bot.sendMessage(chatId,
-        `🔐 *MONITORAR SENHA*\n\n` +
-        `Digite a senha que deseja verificar:`,
-        opts({ parse_mode: 'Markdown' })
-      );
-    }
-
-    // Handler para monitorar TELEFONE
-    if (data === 'mon_phone') {
-      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
-      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      monitoringStates.set(chatId, { action: 'monitor_phone' });
-      return bot.sendMessage(chatId,
-        `📞 *MONITORAR TELEFONE*\n\n` +
-        `Digite o telefone que deseja monitorar (formato: +55 XX 9XXXX-XXXX):`,
-        opts({ parse_mode: 'Markdown' })
-      );
-    }
-
-    // Handler para monitorar DOMÍNIO
-    if (data === 'mon_domain') {
-      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
-      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      monitoringStates.set(chatId, { action: 'monitor_domain' });
-      return bot.sendMessage(chatId,
-        `🌐 *MONITORAR DOMÍNIO*\n\n` +
-        `Digite o domínio que deseja monitorar (ex: example.com):`,
-        opts({ parse_mode: 'Markdown' })
-      );
-    }
-
-    // Handler para monitorar URL
-    if (data === 'mon_url') {
-      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
-      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      monitoringStates.set(chatId, { action: 'monitor_url' });
-      return bot.sendMessage(chatId,
-        `🔗 *MONITORAR URL*\n\n` +
-        `Digite a URL que deseja monitorar (ex: https://example.com):`,
-        opts({ parse_mode: 'Markdown' })
-      );
-    }
 
     // Botão MENU DE BUSCA — Menu principal com módulos
     if (data === 'search_menu') {
@@ -5282,7 +5066,6 @@ const mainMenuButtons = [
             [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
             [{ text: '📋 CHECKERS (PREMIUM)', callback_data: 'checkers_menu', style: 'primary' }],
             [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
-              [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
               [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
               [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
               [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
@@ -5305,7 +5088,6 @@ const mainMenuButtons = [
             [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
             [{ text: '📋 CHECKERS (PREMIUM)', callback_data: 'checkers_menu', style: 'primary' }],
             [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
-            [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
             [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
             [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
             [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
