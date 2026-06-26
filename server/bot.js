@@ -23,9 +23,6 @@ import { searchGitHub, checkSMTP, socialScan, checkGravatar, searchHunter, check
 import { checkWhatsApp, scanLink, reverseImage, checkPixKey, usernameScan, checkPassword, searchAddress, checkBin, formatWhatsApp, formatLink, formatReverseImage, formatPixKey, formatUsername, formatPassword, formatAddress, formatBin } from './osint-tools.js';
 import { parseCardLine, generateFakeName, checkCardCielo, formatCieloResult } from './checker-cielo.js';
 import { checkCardItau, formatItauResult } from './checker-itau.js';
-import { checkCardPaypal, formatPaypalResult } from './checker-paypal.js';
-import { checkCardStripe, formatStripeResult } from './checker-stripe.js';
-import { checkCardBraintree, formatBraintreeResult } from './checker-braintree.js';
 import { checkCardSquareup, formatSquareupResult } from './checker-squareup.js';
 import { checkCardStripe2, formatStripe2Result } from './checker-stripe2.js';
 import { checkCardStripenew, formatStripenewResult } from './checker-stripenew.js';
@@ -4599,67 +4596,14 @@ const mainMenuButtons = [
           return runMultiCardCheck('Itaú Checker', checkCardItau, (card, month, year, cvv, result) => formatItauResult(card, month, year, cvv, result), parseCardLineSimple);
         }
 
-        // PAYPAL CHECK — multi-card
-        if (pendingField === 'paypal_check') {
-          return runMultiCardCheck('PayPal Checker', checkCardPaypal, formatPaypalResult, parseCardLineSimple);
-        }
-
-        // STRIPE CHECK — multi-card
-        if (pendingField === 'stripe_check') {
-          return runMultiCardCheck('Stripe Checker', checkCardStripe, formatStripeResult, parseCardLineSimple);
-        }
-
-        // BRAINTREE CHECK — multi-card
-        if (pendingField === 'braintree_check') {
-          return runMultiCardCheck('Braintree Checker', checkCardBraintree, formatBraintreeResult, parseCardLineSimple);
-        }
-
         // SQUAREUP CHECK — multi-card
         if (pendingField === 'squareup_check') {
           return runMultiCardCheck('SquareUp Checker', checkCardSquareup, formatSquareupResult, parseCardLineSimple);
         }
 
-        // STRIPE API CHECK (SK) — formato: sec|card|mês|ano|cvv por linha
+        // STRIPE API CHECK (SK) — usa SK configurada no .env
         if (pendingField === 'stripe2_check') {
-          pendingSearch.delete(userKey);
-          pendingSearch.delete(chatId);
-          const lines = text.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-          const cards = [];
-          const errors = [];
-          for (const line of lines) {
-            const parts = line.replace(/[,»:]/g, '|').split('|').map(s => s.trim());
-            if (parts.length < 5) { errors.push(line); continue; }
-            const [sec, card, mes, ano, cvv] = parts;
-            if (!/^sk_/.test(sec)) { errors.push(line); continue; }
-            if (!/^\d{13,19}$/.test(card.replace(/\s/g, ''))) { errors.push(line); continue; }
-            cards.push({ sec, card: card.replace(/\s/g, ''), month: mes.padStart(2, '0'), year: ano.length === 2 ? '20' + ano : ano, cvv });
-          }
-          if (cards.length === 0) {
-            return bot.sendMessage(chatId, `❌ *Nenhum cartão válido!*\nUse: \`sec|card|mês|ano|cvv\``, opts({ parse_mode: 'Markdown' }));
-          }
-          const statusMsg = await bot.sendMessage(chatId, `🔄 *Stripe API Checker* — ${cards.length} cartão(ões)`, opts({ parse_mode: 'Markdown' })).catch(() => null);
-          let lives = 0, deads = 0;
-          for (let i = 0; i < cards.length; i++) {
-            const { sec, card, month, year, cvv } = cards[i];
-            try {
-              const result = await checkCardStripe2(card, month, year, cvv, sec);
-              const fmt = formatStripe2Result(card, month, year, cvv, result);
-              if (fmt.status === 'LIVE') lives++; else deads++;
-              const msg = `${fmt.emoji} *Stripe API* #${i+1}/${cards.length}\n💳 \`${fmt.cc}\`\n📌 *${fmt.status}* — ${fmt.detalhes}`;
-              await bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown' })).catch(() => {});
-            } catch (e) {
-              deads++;
-              await bot.sendMessage(chatId, `❌ *Stripe API* #${i+1}: ${e.message}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
-            }
-          }
-          if (statusMsg) bot.deleteMessage(chatId, statusMsg.message_id).catch(() => {});
-          if (errors.length > 0) {
-            await bot.sendMessage(chatId, `⚠️ *${errors.length} linha(s) ignoradas* (formato inválido)`, opts({ parse_mode: 'Markdown' })).catch(() => {});
-          }
-          return bot.sendMessage(chatId, `✅ *Stripe API — Concluído!*\n\n✅ Live: ${lives}\n❌ Dead: ${deads}\n📊 Total: ${cards.length}`, opts({
-            parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: [[{ text: '📋 CHECKERS', callback_data: 'checkers_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] }
-          })).catch(() => {});
+          return runMultiCardCheck('Stripe API Checker', (card, month, year, cvv) => checkCardStripe2(card, month, year, cvv), formatStripe2Result, parseCardLineSimple);
         }
 
         // STRIPENEW CHECK (BadgerHerald) — multi-card
@@ -5681,9 +5625,8 @@ const mainMenuButtons = [
               [{ text: '💉 SIPNI', callback_data: 'sipni_checker', style: 'primary' }, { text: '🏥 SISREG', callback_data: 'sisreg_checker', style: 'primary' }],
               [{ text: '🏛️ SISP-ES', callback_data: 'sisp_checker', style: 'primary' }, { text: '🍪 COOKIE CHECKER', callback_data: 'cookie_checker', style: 'primary' }],
               [{ text: '💳 Cielo Check', callback_data: 'cielo_checker', style: 'primary' }, { text: '💳 Itaú Check', callback_data: 'itau_checker', style: 'primary' }],
-              [{ text: '💳 PayPal Check', callback_data: 'paypal_checker', style: 'primary' }, { text: '💳 Stripe Check', callback_data: 'stripe_checker', style: 'primary' }],
-              [{ text: '💳 Braintree', callback_data: 'braintree_checker', style: 'primary' }, { text: '🔲 SquareUp', callback_data: 'squareup_checker', style: 'primary' }],
-              [{ text: '💳 Stripe API (SK)', callback_data: 'stripe2_checker', style: 'primary' }, { text: '💳 Stripe Badger', callback_data: 'stripenew_checker', style: 'primary' }],
+              [{ text: '🔲 SquareUp', callback_data: 'squareup_checker', style: 'primary' }, { text: '💳 Stripe API (SK)', callback_data: 'stripe2_checker', style: 'primary' }],
+              [{ text: '💳 Stripe Badger', callback_data: 'stripenew_checker', style: 'primary' }],
               [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
@@ -5754,69 +5697,6 @@ const mainMenuButtons = [
       );
     }
 
-    // ── PAYPAL CHECKER ──
-    if (data === 'paypal_checker') {
-      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
-      const access = await checkUserAccess(chatId, cbIsGroup);
-      if (access.status !== 'premium') {
-        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
-      }
-      const userKey = `${chatId}_${msg.from?.id || ''}`;
-      pendingSearch.set(userKey, 'paypal_check');
-      pendingSearch.set(chatId, 'paypal_check');
-      return bot.sendMessage(chatId,
-        `💳 *PAYPAL CHECKER*\n\nEnvie o cartão no formato:\n\n\`\`\`\ncard|mês|ano|cvv\n\`\`\`\n\nSeparadores aceitos: \`|\` \`,\` \`:\` \`»\` etc.\n\n_Exemplo: \`4111111111111111|12|26|123\`_\n\n⚙️ Usa doação via PayPal para testar o cartão.`,
-        opts({
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
-          }
-        })
-      );
-    }
-
-    // ── STRIPE CHECKER ──
-    if (data === 'stripe_checker') {
-      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
-      const access = await checkUserAccess(chatId, cbIsGroup);
-      if (access.status !== 'premium') {
-        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
-      }
-      const userKey = `${chatId}_${msg.from?.id || ''}`;
-      pendingSearch.set(userKey, 'stripe_check');
-      pendingSearch.set(chatId, 'stripe_check');
-      return bot.sendMessage(chatId,
-        `💳 *STRIPE CHECKER*\n\nEnvie o cartão no formato:\n\n\`\`\`\ncard|mês|ano|cvv\n\`\`\`\n\nSeparadores aceitos: \`|\` \`,\` \`:\` \`»\` etc.\n\n_Exemplo: \`4111111111111111|12|26|123\`_\n\n⚙️ Usa WooCommerce + Stripe para testar o cartão.`,
-        opts({
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
-          }
-        })
-      );
-    }
-
-    // ── BRAINTREE CHECKER ──
-    if (data === 'braintree_checker') {
-      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
-      const access = await checkUserAccess(chatId, cbIsGroup);
-      if (access.status !== 'premium') {
-        return bot.sendMessage(chatId, '⚠️ *CHECKERS* é exclusivo para usuários *Premium*!', opts({ parse_mode: 'Markdown' }));
-      }
-      const userKey = `${chatId}_${msg.from?.id || ''}`;
-      pendingSearch.set(userKey, 'braintree_check');
-      pendingSearch.set(chatId, 'braintree_check');
-      return bot.sendMessage(chatId,
-        `💳 *BRAINTREE CHECKER*\n\nEnvie o cartão no formato:\n\n\`\`\`\ncard|mês|ano|cvv\n\`\`\`\n\n_Exemplo: \`4111111111111111|12|26|123\`_`,
-        opts({
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [[{ text: '🔴 CANCELAR', callback_data: 'cancel_search', style: 'primary' }]]
-          }
-        })
-      );
-    }
-
     // ── SQUAREUP CHECKER ──
     if (data === 'squareup_checker') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
@@ -5849,7 +5729,7 @@ const mainMenuButtons = [
       pendingSearch.set(userKey, 'stripe2_check');
       pendingSearch.set(chatId, 'stripe2_check');
       return bot.sendMessage(chatId,
-        `💳 *STRIPE API CHECKER (SK)*\n\nEnvie os dados no formato:\n\n\`\`\`\nsec|card|mês|ano|cvv\n\`\`\`\n\nOnde \`sec\` é sua Stripe Secret Key (sk_live_...).\n\n_Exemplo: \`sk_live_xxx|4111111111111111|12|26|123\`_\n\n⚙️ Cria source > customer > charge $0.50 > refund.`,
+        `💳 *STRIPE API CHECKER (SK)*\n\nEnvie o cartão no formato:\n\n\`\`\`\ncard|mês|ano|cvv\n\`\`\`\n\nSeparadores aceitos: \`|\` \`,\` \`:\` \`»\` etc.\n\n_Exemplo: \`4111111111111111|12|26|123\`_\n\n⚙️ Cria source > customer > charge $0.50 > refund.\n✅ SK já configurada no bot.`,
         opts({
           parse_mode: 'Markdown',
           reply_markup: {
