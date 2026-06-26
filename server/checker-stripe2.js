@@ -43,10 +43,8 @@ export async function checkCardStripe2(card, month, year, cvv, sec) {
     }
   } catch {}
 
-  // Step 1: Create Stripe source
-  const sourceBody = new URLSearchParams({
-    'type': 'card',
-    'owner[name]': userName + ' ' + userLast,
+  // Step 1: Create Stripe token (mais seguro que /v1/sources)
+  const tokenBody = new URLSearchParams({
     'card[number]': cc,
     'card[cvc]': cvc,
     'card[exp_month]': mes,
@@ -57,29 +55,29 @@ export async function checkCardStripe2(card, month, year, cvv, sec) {
   let token, token3, chtoken;
 
   try {
-    const srcRes = await fetch('https://api.stripe.com/v1/sources', {
+    const tokRes = await fetch('https://api.stripe.com/v1/tokens', {
       method: 'POST',
       headers: {
         'Authorization': 'Basic ' + Buffer.from(sk + ':').toString('base64'),
         'Content-Type': 'application/x-www-form-urlencoded',
         'User-Agent': ua,
       },
-      body: sourceBody,
+      body: tokenBody,
       signal: AbortSignal.timeout(20000),
     });
-    result1 = await srcRes.text();
-    const srcJson = JSON.parse(result1);
-    token = srcJson.id || '';
+    result1 = await tokRes.text();
+    const tokJson = JSON.parse(result1);
+    token = tokJson.id || '';
   } catch (e) {
-    return { status: 'REPROVADA', detalhes: 'Stripe source error: ' + e.message };
+    return { status: 'REPROVADA', detalhes: 'Stripe token error: ' + e.message };
   }
 
   if (!token) {
     try {
       const j = JSON.parse(result1);
-      return { status: 'REPROVADA', detalhes: j.error?.message || j.error?.code || 'Stripe source failed' };
+      return { status: 'REPROVADA', detalhes: j.error?.message || j.error?.code || 'Stripe token failed' };
     } catch {
-      return { status: 'REPROVADA', detalhes: 'Stripe source failed' };
+      return { status: 'REPROVADA', detalhes: 'Stripe token failed' };
     }
   }
 
