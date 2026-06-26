@@ -4539,7 +4539,7 @@ const mainMenuButtons = [
         }
 
         // ── Helper para multi-card check ──
-        async function runMultiCardCheck(label, checkFn, formatFn, parseLineFn) {
+        async function runMultiCardCheck(label, checkFn, formatFn, parseLineFn, repeatCb) {
           pendingSearch.delete(userKey);
           pendingSearch.delete(chatId);
           const lines = text.trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
@@ -4577,7 +4577,7 @@ const mainMenuButtons = [
           }
           return bot.sendMessage(chatId, `✅ *${label} — Concluído!*\n\n✅ Live: ${lives}\n❌ Dead: ${deads}\n📊 Total: ${cards.length}`, opts({
             parse_mode: 'Markdown',
-            reply_markup: { inline_keyboard: [[{ text: '📋 CHECKERS', callback_data: 'checkers_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] }
+            reply_markup: { inline_keyboard: [[{ text: '🔁 REPETIR', callback_data: repeatCb || 'checkers_menu', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }]] }
           })).catch(() => {});
         }
 
@@ -4588,27 +4588,27 @@ const mainMenuButtons = [
           return runMultiCardCheck('Cielo Checker', async (card, month, year, cvv) => {
             const nome = await generateFakeName();
             return checkCardCielo(card, month, year, cvv, nome);
-          }, formatCieloResult, parseCardLineSimple);
+          }, formatCieloResult, parseCardLineSimple, 'cielo_checker');
         }
 
         // ITAÚ CHECK — multi-card
         if (pendingField === 'itau_check') {
-          return runMultiCardCheck('Itaú Checker', checkCardItau, (card, month, year, cvv, result) => formatItauResult(card, month, year, cvv, result), parseCardLineSimple);
+          return runMultiCardCheck('Itaú Checker', checkCardItau, (card, month, year, cvv, result) => formatItauResult(card, month, year, cvv, result), parseCardLineSimple, 'itau_checker');
         }
 
         // SQUAREUP CHECK — multi-card
         if (pendingField === 'squareup_check') {
-          return runMultiCardCheck('SquareUp Checker', checkCardSquareup, formatSquareupResult, parseCardLineSimple);
+          return runMultiCardCheck('SquareUp Checker', checkCardSquareup, formatSquareupResult, parseCardLineSimple, 'squareup_checker');
         }
 
         // STRIPE API CHECK (SK) — usa SK configurada no .env
         if (pendingField === 'stripe2_check') {
-          return runMultiCardCheck('Stripe API Checker', (card, month, year, cvv) => checkCardStripe2(card, month, year, cvv), formatStripe2Result, parseCardLineSimple);
+          return runMultiCardCheck('Stripe API Checker', (card, month, year, cvv) => checkCardStripe2(card, month, year, cvv), formatStripe2Result, parseCardLineSimple, 'stripe2_checker');
         }
 
         // STRIPENEW CHECK (BadgerHerald) — multi-card
         if (pendingField === 'stripenew_check') {
-          return runMultiCardCheck('Stripe Badger Checker', checkCardStripenew, formatStripenewResult, parseCardLineSimple);
+          return runMultiCardCheck('Stripe Badger Checker', checkCardStripenew, formatStripenewResult, parseCardLineSimple, 'stripenew_checker');
         }
 
       // ── FERRAMENTAS: handlers ──
