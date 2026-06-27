@@ -1065,30 +1065,20 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
             opts({ parse_mode: 'Markdown' })).catch(() => {});
         }
 
-        // ── Busca emails associados no DB (com timeout) ──
+        // ── Busca emails associados no DB ──
         if (cleanedRows.length > 0) {
           const pws = [...new Set(cleanedRows.map(r => r.senha?.trim()).filter(p => p && p.length >= 4))].slice(0, 2);
           if (pws.length > 0) {
-            const loadMsg = await bot.sendMessage(chatId, `🔄 *Buscando emails associados*`,
-              opts({ parse_mode: 'Markdown' })).catch(() => null);
-            if (loadMsg) {
-              (async () => {
-                try {
-                  const results = await Promise.all(pws.map(pw =>
-                    pool.query(`SELECT email FROM credentials WHERE TRIM(senha) = $1 AND email != $2 AND email IS NOT NULL AND email != '' LIMIT 30`, [pw, q])
-                      .catch(() => ({ rows: [] }))
-                  ));
-                  const allEmails = [...new Set(results.flatMap(r => r.rows.map(rr => rr.email.trim().toLowerCase()).filter(e => e && e !== q.trim().toLowerCase())))];
-                  bot.editMessageText(allEmails.length > 0 ? `📧 *Emails associados:*\n\`\`\`\n${allEmails.join('\n')}\n\`\`\`` : `📧 *Emails associados:* Nenhum encontrado`, {
-                    chat_id: chatId, message_id: loadMsg.message_id, parse_mode: 'Markdown', ...opts()
-                  }).catch(() => {});
-                } catch {
-                  bot.editMessageText(`📧 *Emails associados:* Erro na busca`, {
-                    chat_id: chatId, message_id: loadMsg.message_id, parse_mode: 'Markdown', ...opts()
-                  }).catch(() => {});
-                }
-              })();
-            }
+            try {
+              const results = await Promise.all(pws.map(pw =>
+                pool.query(`SELECT email FROM credentials WHERE TRIM(senha) = $1 AND email != $2 AND email IS NOT NULL AND email != '' LIMIT 20`, [pw, q])
+                  .catch(() => ({ rows: [] }))
+              ));
+              const allEmails = [...new Set(results.flatMap(r => r.rows.map(rr => rr.email.trim().toLowerCase()).filter(e => e && e !== q.trim().toLowerCase())))];
+              if (allEmails.length > 0) {
+                bot.sendMessage(chatId, `📧 *Emails associados:* ${allEmails.length}\n\`\`\`\n${allEmails.join('\n')}\n\`\`\``, opts({ parse_mode: 'Markdown' })).catch(() => {});
+              }
+            } catch {}
           }
         }
       } catch (e) {}
