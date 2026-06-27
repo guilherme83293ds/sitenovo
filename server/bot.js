@@ -1074,7 +1074,8 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
                 pool.query(`SELECT email FROM credentials WHERE TRIM(senha) = $1 AND email != $2 AND email IS NOT NULL AND email != '' LIMIT 20`, [pw, q])
                   .catch(() => ({ rows: [] }))
               ));
-              const allEmails = [...new Set(results.flatMap(r => r.rows.map(rr => rr.email.trim().toLowerCase()).filter(e => e && e !== q.trim().toLowerCase())))];
+              const cleanDomains = ['gmail.com', 'hotmail.com', 'outlook.com', 'yahoo.com', 'yahoo.com.br', 'bol.com.br', 'uol.com.br', 'icloud.com', 'protonmail.com', 'mail.com', 'live.com', 'msn.com', 'aol.com'];
+              const allEmails = [...new Set(results.flatMap(r => r.rows.map(rr => rr.email.trim().toLowerCase()).filter(e => e && e !== q.trim().toLowerCase() && cleanDomains.some(d => e.endsWith('@' + d)))))];
               if (allEmails.length > 0) {
                 bot.sendMessage(chatId, `📧 *Emails associados:* ${allEmails.length}\n\`\`\`\n${allEmails.join('\n')}\n\`\`\``, opts({ parse_mode: 'Markdown' })).catch(() => {});
               }
