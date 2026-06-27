@@ -69,11 +69,10 @@ async function searchIntelX(term) {
     const data = await resultRes.json();
     // Fetch actual content for first 20 records
     if (data.records && data.records.length > 0) {
-      const batch = data.records.slice(0, 10);
-      data.records = await Promise.all(batch.map(async (rec) => {
+      data.records = await Promise.all(data.records.map(async (rec) => {
         try {
           const url = `${INTELX_BASE}/intelligent/search/result/item?type=${rec.type || 0}&media=${rec.media || 0}&key=${encodeURIComponent(rec.key || '')}&id=${rec.id}&bucket=${rec.bucket || ''}&term=${encodeURIComponent(term)}&sort=0&limit=1&offset=0`;
-          const itemRes = await fetch(url, { headers: { 'x-key': INTELX_KEY }, signal: AbortSignal.timeout(3000) });
+          const itemRes = await fetch(url, { headers: { 'x-key': INTELX_KEY }, signal: AbortSignal.timeout(4000) });
           if (itemRes.ok) {
             const itemData = await itemRes.json();
             if (itemData && itemData.records && itemData.records.length > 0) {
