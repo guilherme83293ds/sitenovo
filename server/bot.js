@@ -1011,6 +1011,26 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
           await bot.sendMessage(chatId, `📋 *Vazamentos encontrados:* ${totalFound}\n\n${unique.map(s => `• ${s}`).join('\n')}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
         }
 
+        // ── Extrai IPs do IntelX ──
+        if (ixData && ixData.records && ixData.records.length > 0) {
+          const ipSet = new Set();
+          const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+          for (const rec of ixData.records) {
+            const text = [rec.name, rec.value, JSON.stringify(rec)].filter(Boolean).join(' ');
+            const matches = text.match(ipRegex);
+            if (matches) matches.forEach(ip => ipSet.add(ip));
+          }
+          if (ipSet.size > 0) {
+            const ips = [...ipSet].filter(ip => {
+              const parts = ip.split('.').map(Number);
+              return parts.every(p => p >= 0 && p <= 255) && parts[0] !== 127 && !ip.startsWith('10.') && !ip.startsWith('192.168.') && !(parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31);
+            });
+            if (ips.length > 0) {
+              await bot.sendMessage(chatId, `🌐 *IPs encontrados (IntelX):* ${ips.length}\n\`\`\`\n${ips.slice(0, 30).join('\n')}\n\`\`\`` + (ips.length > 30 ? `\n...e mais ${ips.length - 30}` : ''), opts({ parse_mode: 'Markdown' })).catch(() => {});
+            }
+          }
+        }
+
         // ── OSINT Extras ──
         const [gitData, smtpData, socialData, gravData, hunterData, repData] = await Promise.all([
           searchGitHub(q).catch(() => null),
