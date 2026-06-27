@@ -995,10 +995,7 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
           totalFound += names.length;
           breachSources = breachSources.concat(names);
         }
-        if (ixData && ixData.records && ixData.records.length > 0) {
-          totalFound += ixData.records.length;
-          breachSources = breachSources.concat(...ixData.records.map(r => r.name ? [r.name] : []));
-        }
+        // IntelX: só extrai IPs separadamente, não polui a lista de vazamentos
         if (llData && llData.error === false && llData.message) {
           const names = Object.keys(llData.message).slice(0, 20);
           if (names.length > 0) {
