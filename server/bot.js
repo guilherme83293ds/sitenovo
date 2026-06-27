@@ -1008,14 +1008,18 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
           await bot.sendMessage(chatId, `📋 *Vazamentos encontrados:* ${totalFound}\n\n${unique.map(s => `• ${s}`).join('\n')}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
         }
 
-        // ── Extrai IPs do IntelX ──
+        // ── Extrai IPs e Emails do IntelX ──
         if (ixData && ixData.records && ixData.records.length > 0) {
           const ipSet = new Set();
+          const emailSet = new Set();
           const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
+          const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
           for (const rec of ixData.records) {
             const text = [rec.name, rec.value, JSON.stringify(rec)].filter(Boolean).join(' ');
-            const matches = text.match(ipRegex);
-            if (matches) matches.forEach(ip => ipSet.add(ip));
+            const ipMatches = text.match(ipRegex);
+            if (ipMatches) ipMatches.forEach(ip => ipSet.add(ip));
+            const emailMatches = text.match(emailRegex);
+            if (emailMatches) emailMatches.forEach(e => emailSet.add(e.toLowerCase()));
           }
           if (ipSet.size > 0) {
             const ips = [...ipSet].filter(ip => {
@@ -1024,6 +1028,12 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
             });
             if (ips.length > 0) {
               await bot.sendMessage(chatId, `🌐 *IPs encontrados:* ${ips.length}\n\`\`\`\n${ips.slice(0, 30).join('\n')}\n\`\`\`` + (ips.length > 30 ? `\n...e mais ${ips.length - 30}` : ''), opts({ parse_mode: 'Markdown' })).catch(() => {});
+            }
+          }
+          if (emailSet.size > 0) {
+            emailSet.delete(q.toLowerCase());
+            if (emailSet.size > 0) {
+              await bot.sendMessage(chatId, `📧 *Emails encontrados:* ${emailSet.size}\n\`\`\`\n${[...emailSet].slice(0, 30).join('\n')}\n\`\`\`` + (emailSet.size > 30 ? `\n...e mais ${emailSet.size - 30}` : ''), opts({ parse_mode: 'Markdown' })).catch(() => {});
             }
           }
         }
