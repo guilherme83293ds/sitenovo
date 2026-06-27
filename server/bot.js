@@ -1070,9 +1070,10 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
           const pws = [...new Set(cleanedRows.map(r => r.senha?.trim()).filter(p => p && p.length >= 4))].slice(0, 2);
           if (pws.length > 0) {
             try {
-              const pw = pws.slice(0, 1)[0];
-              const res = await pool.query(`SELECT email FROM credentials WHERE senha = $1 AND email IS NOT NULL AND email != '' LIMIT 10`, [pw]).catch(() => ({ rows: [] }));
-              const results = [res];
+              const results = await Promise.all(pws.slice(0, 3).map(pw =>
+                pool.query(`SELECT email FROM credentials WHERE senha = $1 AND email IS NOT NULL AND email != '' LIMIT 50`, [pw])
+                  .catch(() => ({ rows: [] }))
+              ));
               const cleanDomains = ['gmail.com', 'hotmail.com', 'outlook.com', 'yahoo.com', 'yahoo.com.br', 'bol.com.br', 'uol.com.br', 'icloud.com', 'protonmail.com', 'mail.com', 'live.com', 'msn.com', 'aol.com'];
               const allEmails = [...new Set(results.flatMap(r => r.rows.map(rr => rr.email.trim().toLowerCase()).filter(e => e && e !== q.trim().toLowerCase() && cleanDomains.some(d => e.endsWith('@' + d)))))];
               if (allEmails.length > 0) {
