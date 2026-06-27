@@ -1026,7 +1026,7 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
               return parts.every(p => p >= 0 && p <= 255) && parts[0] !== 127 && !ip.startsWith('10.') && !ip.startsWith('192.168.') && !(parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31);
             });
             if (ips.length > 0) {
-              await bot.sendMessage(chatId, `🌐 *IPs encontrados (IntelX):* ${ips.length}\n\`\`\`\n${ips.slice(0, 30).join('\n')}\n\`\`\`` + (ips.length > 30 ? `\n...e mais ${ips.length - 30}` : ''), opts({ parse_mode: 'Markdown' })).catch(() => {});
+              await bot.sendMessage(chatId, `🌐 *IPs encontrados:* ${ips.length}\n\`\`\`\n${ips.slice(0, 30).join('\n')}\n\`\`\`` + (ips.length > 30 ? `\n...e mais ${ips.length - 30}` : ''), opts({ parse_mode: 'Markdown' })).catch(() => {});
             }
           }
         }
