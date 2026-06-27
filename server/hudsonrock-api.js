@@ -19,14 +19,14 @@ function maskEmail(email) {
 
 async function searchByEmail(email) {
   const url = `${FREE_API_BASE}/search-by-email?email=${encodeURIComponent(email)}`;
-  const res = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(5000) });
+  const res = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(3000) });
   if (!res.ok) return null;
   return res.json();
 }
 
 async function searchByUsername(username) {
   const url = `${FREE_API_BASE}/search-by-username?username=${encodeURIComponent(username)}`;
-  const res = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(5000) });
+  const res = await fetch(url, { headers: { accept: 'application/json' }, signal: AbortSignal.timeout(3000) });
   if (!res.ok) return null;
   return res.json();
 }
@@ -35,7 +35,7 @@ async function searchLeakCheck(query) {
   const url = `${LEAKCHECK_API}?check=${encodeURIComponent(query)}`;
   const res = await fetch(url, {
     headers: { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' },
-    signal: AbortSignal.timeout(4000)
+    signal: AbortSignal.timeout(3000)
   });
   if (!res.ok) return null;
   return res.json();
@@ -43,7 +43,7 @@ async function searchLeakCheck(query) {
 
 async function searchXposedOrNot(email) {
   const url = `${XON_API}/check-email/${encodeURIComponent(email)}`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+  const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
   if (!res.ok) return null;
   return res.json();
 }
@@ -55,25 +55,25 @@ async function searchIntelX(term) {
       method: 'POST',
       headers: { 'x-key': INTELX_KEY, 'Content-Type': 'application/json' },
       body: JSON.stringify({ term, maxresults: 100, media: 0, terminate: [], timeout: 10 }),
-      signal: AbortSignal.timeout(10000)
+      signal: AbortSignal.timeout(6000)
     });
     if (!searchRes.ok) return null;
     const { id } = await searchRes.json();
     if (!id) return null;
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, 500));
     const resultRes = await fetch(`${INTELX_BASE}/intelligent/search/result?id=${id}&limit=50&offset=0`, {
       headers: { 'x-key': INTELX_KEY },
-      signal: AbortSignal.timeout(5000)
+      signal: AbortSignal.timeout(3000)
     });
     if (!resultRes.ok) return null;
     const data = await resultRes.json();
     // Fetch actual content for first 20 records
     if (data.records && data.records.length > 0) {
-      const batch = data.records.slice(0, 20);
+      const batch = data.records.slice(0, 10);
       data.records = await Promise.all(batch.map(async (rec) => {
         try {
           const url = `${INTELX_BASE}/intelligent/search/result/item?type=${rec.type || 0}&media=${rec.media || 0}&key=${encodeURIComponent(rec.key || '')}&id=${rec.id}&bucket=${rec.bucket || ''}&term=${encodeURIComponent(term)}&sort=0&limit=1&offset=0`;
-          const itemRes = await fetch(url, { headers: { 'x-key': INTELX_KEY }, signal: AbortSignal.timeout(5000) });
+          const itemRes = await fetch(url, { headers: { 'x-key': INTELX_KEY }, signal: AbortSignal.timeout(3000) });
           if (itemRes.ok) {
             const itemData = await itemRes.json();
             if (itemData && itemData.records && itemData.records.length > 0) {
@@ -95,7 +95,7 @@ async function searchLeakLookup(query, type = 'email_address') {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: `key=${encodeURIComponent(LEAKLOOKUP_KEY)}&type=${encodeURIComponent(type)}&query=${encodeURIComponent(query)}`,
-    signal: AbortSignal.timeout(5000)
+    signal: AbortSignal.timeout(3000)
   });
   if (!res.ok) return null;
   return res.json();
