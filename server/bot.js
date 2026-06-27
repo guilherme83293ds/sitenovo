@@ -1015,7 +1015,7 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
           const ipRegex = /\b(?:\d{1,3}\.){3}\d{1,3}\b/g;
           const emailRegex = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g;
           for (const rec of ixData.records) {
-            const text = [rec.name, rec.value, JSON.stringify(rec)].filter(Boolean).join(' ');
+            const text = [rec.name, rec.value, rec.key, rec.content, rec.date, rec.bucket, rec.media_name, JSON.stringify(rec)].filter(Boolean).join(' ');
             const ipMatches = text.match(ipRegex);
             if (ipMatches) ipMatches.forEach(ip => ipSet.add(ip));
             const emailMatches = text.match(emailRegex);
