@@ -22,6 +22,7 @@ import { searchByEmail, searchByUsername, searchLeakCheck, searchXposedOrNot, se
 import { searchGitHub, checkSMTP, socialScan, checkGravatar, searchHunter, checkEmailRep, formatGitHub, formatSMTP, formatSocial, formatGravatar, formatHunter, formatEmailRep } from './osint-email.js';
 import { checkWhatsApp, scanLink, reverseImage, checkPixKey, usernameScan, checkPassword, searchAddress, checkBin, formatWhatsApp, formatLink, formatReverseImage, formatPixKey, formatUsername, formatPassword, formatAddress, formatBin } from './osint-tools.js';
 import { querySIPNI } from './sipni-api.js';
+import { lookupShodan, formatShodanResult } from './shodan-api.js';
 import { consultarPlaca, consultarCpf } from './radar-serpro.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -1025,6 +1026,14 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
             });
             if (ips.length > 0) {
               await bot.sendMessage(chatId, `🌐 *IPs encontrados:* ${ips.length}\n\`\`\`\n${ips.slice(0, 30).join('\n')}\n\`\`\`` + (ips.length > 30 ? `\n...e mais ${ips.length - 30}` : ''), opts({ parse_mode: 'Markdown' })).catch(() => {});
+              const shodanIps = ips.slice(0, 5);
+              for (const ip of shodanIps) {
+                const shodanData = await lookupShodan(ip);
+                const formatted = formatShodanResult(shodanData);
+                if (formatted) {
+                  await bot.sendMessage(chatId, `🔍 *Shodan — ${ip}*\n${formatted}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+                }
+              }
             }
           }
           if (emailSet.size > 0) {

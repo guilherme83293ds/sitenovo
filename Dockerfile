@@ -1,5 +1,7 @@
 FROM node:20-alpine
 
+RUN apk add --no-cache python3 py3-pip git build-base
+
 WORKDIR /app
 
 COPY package.json package-lock.json ./
