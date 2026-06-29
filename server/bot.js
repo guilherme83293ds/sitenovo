@@ -965,7 +965,7 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
     const isPremium = access.status === 'premium';
     const isGroup = access.status === 'group';
     const totalNote = (isPremium || isGroup) && total > count ? `\n📊 _Total de logins encontrados: ${total.toLocaleString('pt-BR')}_` : '';
-    const formatLabel = format === 'chk' ? 'CHK' : format === 'json' ? 'JSON' : format === 'csv' ? 'CSV' : field.toUpperCase();
+    const formatLabel = format === 'chk' ? 'USER:PASS' : format === 'chk2' ? 'URL:USER:PASS' : format === 'full' ? 'FULL' : format === 'json' ? 'JSON' : format === 'csv' ? 'CSV' : field.toUpperCase();
 
     const fileExt = format === 'json' ? 'json' : format === 'csv' ? 'csv' : 'txt';
     const contentType = format === 'json' ? 'application/json' : format === 'csv' ? 'text/csv' : 'text/plain';
@@ -973,7 +973,7 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
     const btn = inGroup ? undefined : newSearchBtn;
     const niceIcon = { url: '🌐', email: '📧', senha: '🔑', telefone: '📱', SENHA: '🔑', TELEFONE: '📱' }[field] || '📁';
     await bot.sendDocument(chatId, Buffer.from(content, 'utf8'), opts({
-      caption: `${niceIcon} *${formatLabel}* — \`${q}\`\n📂 *${count.toLocaleString('pt-BR')}* logins encontrados${limitNote}${trialNote}${totalNote}${buscadoPor}`,
+      caption: `${niceIcon} *${formatLabel}* — \`${q}\`\n📁 *Formato:* ${formatLabel}\n📂 *${count.toLocaleString('pt-BR')}* logins encontrados${limitNote}${trialNote}${totalNote}${buscadoPor}`,
       parse_mode: 'Markdown',
       reply_markup: btn
     }), { filename: `BREACH_${formatLabel}_${safeQuery}.${fileExt}`, contentType });
