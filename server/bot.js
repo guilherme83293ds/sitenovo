@@ -1027,12 +1027,12 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
             });
             if (ips.length > 0) {
               await bot.sendMessage(chatId, `🌐 *IPs encontrados:* ${ips.length}\n\`\`\`\n${ips.slice(0, 30).join('\n')}\n\`\`\`` + (ips.length > 30 ? `\n...e mais ${ips.length - 30}` : ''), opts({ parse_mode: 'Markdown' })).catch(() => {});
-              const lookupIps = ips.slice(0, 10);
-              for (const ip of lookupIps) {
-                const ipData = await lookupShodan(ip);
+              for (let i = 0; i < ips.length; i++) {
+                if (i > 0) await new Promise(r => setTimeout(r, 500));
+                const ipData = await lookupShodan(ips[i]);
                 const formatted = formatShodanResult(ipData);
                 if (formatted) {
-                  await bot.sendMessage(chatId, `🔍 *${ip}*\n${formatted}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+                  await bot.sendMessage(chatId, `🔍 *${ips[i]}*\n${formatted}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
                 }
               }
             }
@@ -1043,6 +1043,22 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
               await bot.sendMessage(chatId, `📧 *Emails encontrados:* ${emailSet.size}\n\`\`\`\n${[...emailSet].slice(0, 30).join('\n')}\n\`\`\`` + (emailSet.size > 30 ? `\n...e mais ${emailSet.size - 30}` : ''), opts({ parse_mode: 'Markdown' })).catch(() => {});
             }
           }
+        }
+
+        // ── IP do domínio do email no Shodan ──
+        const emailDomain = q.includes('@') ? q.split('@')[1]?.trim().toLowerCase() : null;
+        if (emailDomain) {
+          try {
+            const domainIps = await dns.resolve4(emailDomain);
+            const domainIp = domainIps?.[0];
+            if (domainIp) {
+              const ipData = await lookupShodan(domainIp);
+              const formatted = formatShodanResult(ipData);
+              if (formatted) {
+                await bot.sendMessage(chatId, `📧 *${emailDomain} — ${domainIp}*\n${formatted}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+              }
+            }
+          } catch {}
         }
 
         // ── OSINT Extras ──
