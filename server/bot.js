@@ -1034,6 +1034,15 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
                 if (formatted) {
                   await bot.sendMessage(chatId, `🔍 *${ips[i]}*\n${formatted}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
                 }
+                try {
+                  const geoRes = await fetch(`http://ip-api.com/json/${encodeURIComponent(ips[i])}?fields=status,country,regionName,city,lat,lon,isp,org,as`, { signal: AbortSignal.timeout(4000) });
+                  if (geoRes.ok) {
+                    const geo = await geoRes.json();
+                    if (geo.status === 'success') {
+                      await bot.sendMessage(chatId, `📍 *${ips[i]}*\n🌍 ${geo.city}, ${geo.regionName} - ${geo.country}\n📡 ${geo.isp || geo.org || '?'}\n🔄 ${geo.as || ''}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+                    }
+                  }
+                } catch {}
               }
             }
           }
@@ -1043,22 +1052,6 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
               await bot.sendMessage(chatId, `📧 *Emails encontrados:* ${emailSet.size}\n\`\`\`\n${[...emailSet].slice(0, 30).join('\n')}\n\`\`\`` + (emailSet.size > 30 ? `\n...e mais ${emailSet.size - 30}` : ''), opts({ parse_mode: 'Markdown' })).catch(() => {});
             }
           }
-        }
-
-        // ── IP do domínio do email no Shodan ──
-        const emailDomain = q.includes('@') ? q.split('@')[1]?.trim().toLowerCase() : null;
-        if (emailDomain) {
-          try {
-            const domainIps = await dns.resolve4(emailDomain);
-            const domainIp = domainIps?.[0];
-            if (domainIp) {
-              const ipData = await lookupShodan(domainIp);
-              const formatted = formatShodanResult(ipData);
-              if (formatted) {
-                await bot.sendMessage(chatId, `📧 *${emailDomain} — ${domainIp}*\n${formatted}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
-              }
-            }
-          } catch {}
         }
 
         // ── OSINT Extras ──
