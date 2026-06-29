@@ -1026,12 +1026,12 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
             });
             if (ips.length > 0) {
               await bot.sendMessage(chatId, `🌐 *IPs encontrados:* ${ips.length}\n\`\`\`\n${ips.slice(0, 30).join('\n')}\n\`\`\`` + (ips.length > 30 ? `\n...e mais ${ips.length - 30}` : ''), opts({ parse_mode: 'Markdown' })).catch(() => {});
-              const shodanIps = ips.slice(0, 5);
-              for (const ip of shodanIps) {
-                const shodanData = await lookupShodan(ip);
-                const formatted = formatShodanResult(shodanData);
+              const lookupIps = ips.slice(0, 5);
+              for (const ip of lookupIps) {
+                const ipData = await lookupShodan(ip);
+                const formatted = formatShodanResult(ipData);
                 if (formatted) {
-                  await bot.sendMessage(chatId, `🔍 *Shodan — ${ip}*\n${formatted}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+                  await bot.sendMessage(chatId, `🔍 *${ip}*\n${formatted}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
                 }
               }
             }
