@@ -1026,7 +1026,7 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
             });
             if (ips.length > 0) {
               await bot.sendMessage(chatId, `🌐 *IPs encontrados:* ${ips.length}\n\`\`\`\n${ips.slice(0, 30).join('\n')}\n\`\`\`` + (ips.length > 30 ? `\n...e mais ${ips.length - 30}` : ''), opts({ parse_mode: 'Markdown' })).catch(() => {});
-              const lookupIps = ips.slice(0, 5);
+              const lookupIps = ips.slice(0, 10);
               for (const ip of lookupIps) {
                 const ipData = await lookupShodan(ip);
                 const formatted = formatShodanResult(ipData);
