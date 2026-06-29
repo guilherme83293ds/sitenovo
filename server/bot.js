@@ -27,6 +27,7 @@ import { checkCardSquareup, formatSquareupResult } from './checker-squareup.js';
 import { checkCardStripe2, formatStripe2Result } from './checker-stripe2.js';
 import { checkCardStripenew, formatStripenewResult } from './checker-stripenew.js';
 import { querySIPNI } from './sipni-api.js';
+import { consultarPlaca, consultarCpf } from './radar-serpro.js';
 import { checkSipniBatch, cancelRun } from './sipni-checker.js';
 import { checkSisregBatch, cancelSisregRun } from './sisreg-checker.js';
 import { checkSispBatch, cancelSispRun } from './sisp-checker.js';
@@ -130,13 +131,13 @@ if (stripeKey && stripeKey !== 'sua_chave_secreta_stripe') {
 
 // Planos: [label, dias, preço em centavos]
 const PLANS = [
-  { label: 'STARTER', days: 7,  priceCents: 412,  emoji: '🚀' },
-  { label: 'PREMIUM', days: 15, priceCents: 820,  emoji: '⭐' },
-  { label: 'VIP', days: 30, priceCents: 1370, emoji: '👑' },
-  { label: 'ECONOMIC', days: 1, priceCents: 545, emoji: '💎' },
-  { label: 'ADVANCED', days: 7, priceCents: 1095, emoji: '🔹' },
-  { label: 'ULTRA', days: 30, priceCents: 1920, emoji: '🔹' },
-  { label: 'ELITE', days: null, priceCents: 8250, emoji: '👑' },
+  { label: 'STARTER', days: 7,  priceCents: 1500,  emoji: '🚀' },
+  { label: 'PREMIUM', days: 15, priceCents: 2500,  emoji: '⭐' },
+  { label: 'VIP', days: 30, priceCents: 4000, emoji: '👑' },
+  { label: 'ECONOMIC', days: 1, priceCents: 1000, emoji: '💎' },
+  { label: 'ADVANCED', days: 7, priceCents: 3000, emoji: '🔹' },
+  { label: 'ULTRA', days: 30, priceCents: 5000, emoji: '🔹' },
+  { label: 'ELITE', days: null, priceCents: 20000, emoji: '👑' },
 ];
 
 async function getMaxRows(chatId) {
@@ -677,9 +678,9 @@ async function getUniqueValidRows(rows, format, chatId) {
     if (format === 'chk') {
       key = `${emailClean}:${senhaClean}`;
     } else if (format === 'chk2') {
-      key = `${url.trim()}:${emailClean}:${senhaClean}`;
+      key = `${url.trim()}`;
     } else {
-      key = `${url.trim()}|${emailClean}|${senhaClean}|${telefone.trim()}`;
+      key = `${url.trim()}`;
     }
 
     if (!seen.has(key)) {
@@ -745,6 +746,8 @@ function saveConsultaCache() {
 // (As funções de autenticação e query estão em sipni-api.js)
 // ══════════════════════════════════════════════════════
 
+function escV2(s) { return s.replace(/([\(\)\.\!\-\#\=\+\{\}\[\]\|])/g, '\\$1'); }
+
 const newSearchBtn = { inline_keyboard: [[{ text: '🔍 NOVA BUSCA', callback_data: 'search_menu', style: 'primary' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'back_start', style: 'primary' }], [{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] };
 const noResultBtn = { inline_keyboard: [[{ text: '🔍 NOVA BUSCA', callback_data: 'search_menu', style: 'primary' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'back_start', style: 'primary' }]] };
 const cancelSearchBtn = { inline_keyboard: [[{ text: '🔴 CANCELAR BUSCA', callback_data: 'cancel_search', style: 'primary' }]] };
@@ -786,17 +789,19 @@ async function formatRowsWithLimit(rows, format, chatId) {
   const access = await checkUserAccess(chatId, inGroup);
   const isPremium = access.status === 'premium';
   const isGroup = access.status === 'group';
+  const formatLabel = { chk: 'USER:PASS', chk2: 'URL:USER:PASS', json: 'JSON', csv: 'CSV', full: 'FULL' }[format] || format.toUpperCase();
   const formatter = format === 'chk' ? formatRowChk : format === 'chk2' ? formatRowChk2 : format === 'json' ? formatRowJson : format === 'csv' ? formatRowCsv : formatRow;
   const limit = getPlanLimit(access);
   const limited = rows.slice(0, limit);
-  const content = format === 'json' ? '[' + limited.map(formatter).join(',\n') + ']' : format === 'csv' ? 'url,email,senha,ip,data\n' + limited.map(formatter).join('\n') : limited.map(formatter).join('\n');
+  const header = `📁 Formato: ${formatLabel}\n━━━━━━━━━━━━━━━━━━━━━━\n`;
+  const content = format === 'json' ? '[' + limited.map(formatter).join(',\n') + ']' : format === 'csv' ? 'url,email,senha,ip,data\n' + limited.map(formatter).join('\n') : header + limited.map(formatter).join('\n');
   return { content, count: limited.length, total: rows.length, limited: rows.length > limit };
 }
 
 // ══════════════════════════════════════════════════
 // BUSCA POR CAMPO ESPECÍFICO (url, email, senha, telefone)
 // ══════════════════════════════════════════════════
-async function sendResults(chatId, field, query, pool, threadId, format = 'full') {
+async function sendResults(chatId, field, query, pool, threadId, format = 'full', username = '') {
   const opts = (o = {}) => threadId ? { message_thread_id: threadId, ...o } : o;
 
   // DB5 (último pool) é admin-only
@@ -809,6 +814,7 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
   const q = query.trim();
   const fieldEmoji = { url: '🌐', email: '📧', senha: '🔑', telefone: '📱' }[field] || '🔍';
   const doPartial = q.length >= 6;
+  const inGroup = groupChats.has(chatId);
 
   let loadingMsg;
   try {
@@ -823,7 +829,6 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
 
     const MAX_ROWS = await getMaxRows(chatId);
   try {
-    const t0 = Date.now();
     // Verifica cancelamento antes de iniciar
     if (runningSearches.get(chatId)?.cancelled) {
       runningSearches.delete(chatId);
@@ -934,11 +939,12 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
 
     if (loadingMsg) bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
 
+    const buscadoPor = username ? `\n👤 *Buscado por* — ${username}` : '';
     if (rows.length === 0) {
       const hint = field === 'url'
         ? `\n\n💡 _Tente sem http:// ex: \`/inurl site.gov.br\`_`
         : !doPartial ? `\n\n💡 _Termo curto: só busca exata._` : '';
-      return bot.sendMessage(chatId, `❌ Nenhum resultado para \`${q}\`${hint}`, opts({ parse_mode: 'Markdown', reply_markup: noResultBtn }));
+      return bot.sendMessage(chatId, `❌ Nenhum resultado para \`${q}\`${hint}${buscadoPor}`, opts({ parse_mode: 'Markdown', reply_markup: inGroup ? undefined : noResultBtn }));
     }
 
     const cleanedRows = await getUniqueValidRows(rows, format, chatId);
@@ -947,13 +953,12 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
       if (cleanedRows.govBlocked) {
         return bot.sendMessage(chatId, `❌ Usuários Trial não tem permissão para acessar órgãos governamentais`, opts({ parse_mode: 'Markdown' }));
       }
-      return bot.sendMessage(chatId, `❌ Nenhum resultado válido (com usuário e senha) encontrado para \`${q}\``, opts({ parse_mode: 'Markdown' }));
+      return bot.sendMessage(chatId, `❌ Nenhum resultado válido (com usuário e senha) encontrado para \`${q}\`${buscadoPor}`, opts({ parse_mode: 'Markdown' }));
     }
 
     const { content, count, total, limited } = await formatRowsWithLimit(cleanedRows, format, chatId);
     const safeQuery = q.replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 40);
     const formatTag = format === 'chk' ? 'CHK' : format === 'chk2' ? 'CHK2' : format === 'json' ? 'JSON' : format === 'csv' ? 'CSV' : field.toUpperCase();
-    const inGroup = groupChats.has(chatId);
     const limitNote = rows.length >= MAX_ROWS ? `\n⚠️ _Limite de ${MAX_ROWS.toLocaleString('pt-BR')} resultados atingido_` : '';
     const trialNote = limited ? `\n⚠️ _Modo teste: apenas ${count.toLocaleString('pt-BR')} resultados exibidos_` : '';
     const access = await checkUserAccess(chatId, inGroup);
@@ -965,10 +970,12 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
     const fileExt = format === 'json' ? 'json' : format === 'csv' ? 'csv' : 'txt';
     const contentType = format === 'json' ? 'application/json' : format === 'csv' ? 'text/csv' : 'text/plain';
 
+    const btn = inGroup ? undefined : newSearchBtn;
+    const niceIcon = { url: '🌐', email: '📧', senha: '🔑', telefone: '📱', SENHA: '🔑', TELEFONE: '📱' }[field] || '📁';
     await bot.sendDocument(chatId, Buffer.from(content, 'utf8'), opts({
-      caption: `✅ *${formatLabel}:* \`${q}\`\n📂 _${count.toLocaleString('pt-BR')} logins enviados_${limitNote}${trialNote}${totalNote}`,
+      caption: `${niceIcon} *${formatLabel}* — \`${q}\`\n📂 *${count.toLocaleString('pt-BR')}* logins encontrados${limitNote}${trialNote}${totalNote}${buscadoPor}`,
       parse_mode: 'Markdown',
-      reply_markup: newSearchBtn
+      reply_markup: btn
     }), { filename: `BREACH_${formatLabel}_${safeQuery}.${fileExt}`, contentType });
 
     if (field === 'email') {
@@ -1067,22 +1074,33 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
 
         // ── Busca emails associados no DB ──
         if (cleanedRows.length > 0) {
-          const pws = [...new Set(cleanedRows.map(r => r.senha?.trim()).filter(p => p && p.length >= 4))].slice(0, 2);
+          const pws = [...new Set(cleanedRows.map(r => r.senha?.trim()).filter(p => p && p.length >= 4))];
           if (pws.length > 0) {
             try {
-              const results = await Promise.all(pws.slice(0, 3).map(pw =>
-                pool.query(`SELECT email FROM credentials WHERE senha = $1 AND email IS NOT NULL AND email != '' LIMIT 50`, [pw])
-                  .catch(() => ({ rows: [] }))
-              ));
+              const results = [];
+              for (let i = 0; i < pws.length; i += 10) {
+                const batch = pws.slice(i, i + 10).map(pw =>
+                  pool.query(`SELECT email FROM credentials WHERE senha = $1 AND email IS NOT NULL AND email != '' LIMIT 200`, [pw])
+                    .catch(() => ({ rows: [] }))
+                );
+                results.push(...await Promise.all(batch));
+              }
               const cleanDomains = ['gmail.com', 'hotmail.com', 'outlook.com', 'yahoo.com', 'yahoo.com.br', 'bol.com.br', 'uol.com.br', 'icloud.com', 'protonmail.com', 'mail.com', 'live.com', 'msn.com', 'aol.com'];
               const allEmails = [...new Set(results.flatMap(r => r.rows.map(rr => rr.email.trim().toLowerCase()).filter(e => e && e !== q.trim().toLowerCase() && cleanDomains.some(d => e.endsWith('@' + d)))))];
               if (allEmails.length > 0) {
                 bot.sendMessage(chatId, `📧 *Emails associados:* ${allEmails.length}\n\`\`\`\n${allEmails.join('\n')}\n\`\`\``, opts({ parse_mode: 'Markdown' })).catch(() => {});
+                try {
+                  const ipResults = await pool.query(`SELECT DISTINCT ip FROM credentials WHERE email = ANY($1) AND ip IS NOT NULL AND ip != '' LIMIT 100`, [allEmails]);
+                  const ips = [...new Set(ipResults.rows.map(r => r.ip.trim()).filter(Boolean))];
+                  if (ips.length > 0) {
+                    bot.sendMessage(chatId, `🌐 *IPs dos emails associados:* ${ips.length}\n\`\`\`\n${ips.join('\n')}\n\`\`\``, opts({ parse_mode: 'Markdown' })).catch(() => {});
+                  }
+                } catch (e) { console.error('[EMAIL IPS]', e?.message); }
               }
-            } catch {}
+            } catch (e) { console.error('[ASSOC EMAILS]', e?.message); }
           }
         }
-      } catch (e) {}
+      } catch (e) { console.error('[OSINT ENRICH]', e?.message); }
     }
 
     runningSearches.delete(chatId);
@@ -1122,7 +1140,7 @@ async function sendSmartResults(chatId, query, pool, threadId) {
 
   // Se detectou tipo específico, redireciona para busca direta
   if (tipo !== 'smart') {
-    return sendResults(chatId, tipo, q, pool, threadId);
+    return sendResults(chatId, tipo, q, pool, threadId, 'full', '');
   }
 
   // Busca parcial só para queries longas (evita timeout)
@@ -1828,6 +1846,7 @@ async function sendSubdomainResults(chatId, query, pool, threadId) {
   }
 
   const domain = query.trim().replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0].toLowerCase();
+  const isPremium = groupChats.has(chatId) || ((await checkUserAccess(chatId, groupChats.has(chatId)))?.status === 'premium');
   let loadingMsg;
   try {
     bot.sendChatAction(chatId, 'upload_document', opts()).catch(() => {});
@@ -2966,19 +2985,16 @@ export async function setupBot(app, pool, writePool, publicPool) {
       const key = row?.key || '—';
       const status = isActive ? '💎 Premium' : '🟢 Free';
       const maxResults = plan === 'STARTER' ? '5.000' : plan === 'PRO' ? '20.000' : plan === 'POWER' ? 'Ilimitado' : '100';
-      const limitText = plan === 'STARTER' ? '🚀 STARTER — 5.000 resultados, 30 dias' :
-                        plan === 'PRO' ? '⭐ PRO — 20.000 resultados, 30 dias' :
-                        plan === 'POWER' ? '🔥 POWER — Ilimitado, Vitalício' : '🟢 FREE — 100 resultados';
-      const planTable =
-        `🚀 *STARTER* — 5.000 resultados, 30 dias\n` +
-        `⭐ *PRO* — 20.000 resultados, 30 dias\n` +
-        `🔥 *POWER* — Ilimitado, Vitalício\n\n` +
-        `📌 *Seu plano:* ${limitText}`;
+      const planQuote = (p) => {
+        const daysStr = p.days ? `⏳ ${p.days}d` : '♾️ Vitalício';
+        return `> ${p.emoji} ${p.label} — *${escV2(`R$${(p.priceCents / 100).toFixed(0)}`)}* \\(${escV2(daysStr)}\\)`;
+      };
+      const planTable = PLANS.map(p => planQuote(p)).join('\n');
       const keyLine = plan !== 'FREE' && plan !== '—' ? `\n🔑 Key: \`${key}\`` : '';
-      return bot.sendMessage(chatId,
-        `👤 *MINHA CONTA*\n\n🆔 ID: \`${chatId}\`\n📊 Status: ${status}\n📋 Plano: ${plan}${keyLine}\n📅 Expira: ${expires}\n📈 Limite: ${maxResults}\n\n${planTable}`,
+      const contaText = `👤 *MINHA CONTA*\n\n🆔 ID: \`${chatId}\`\n📊 Status: ${status}\n📋 Plano: ${escV2(plan)}${keyLine}\n📅 Expira: ${escV2(expires)}\n📈 Limite: ${escV2(maxResults)}\n\n📋 *TABELA DE PLANOS*\n${planTable}`;
+      return bot.sendMessage(chatId, contaText,
         opts({
-          parse_mode: 'Markdown',
+          parse_mode: 'MarkdownV2',
           reply_markup: {
             inline_keyboard: [[{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }]]
           }
@@ -3120,7 +3136,7 @@ export async function setupBot(app, pool, writePool, publicPool) {
         const logsPath = path.join(__dirname, 'bot_logs.txt');
         fs.appendFileSync(logsPath, logLine);
       }
-      const command = isCommand ? text.split(' ')[0].toLowerCase().split('@')[0] : null;
+      let command = isCommand ? text.split(' ')[0].toLowerCase().split('@')[0] : null;
       const args = isCommand ? text.split(' ').slice(1).join(' ').trim() : text;
 
       // ── Comandos ──────────────────────────────────
@@ -3544,10 +3560,10 @@ const mainMenuButtons = [
         return bot.sendMessage(chatId,
           `💳 *ESCOLHA SEU PLANO*\n\n` +
           `Selecione abaixo o plano desejado para comprar sua key:\n\n` +
-          PLANS.map((p, i) => `${i+1}. ${p.emoji} *${p.label}* — R$${(p.priceCents / 100).toFixed(0)}`).join('\n') +
+          PLANS.map((p, i) => `> ${p.emoji} ${p.label} — *${escV2(`R$${(p.priceCents / 100).toFixed(0)}`)}*`).join('\n') +
           `\n\n💳 *Aceitamos:* Cartão de Crédito e Boleto`,
           opts({
-            parse_mode: 'Markdown',
+            parse_mode: 'MarkdownV2',
             reply_markup: { inline_keyboard: [...planButtons] }
           })
         );
@@ -3621,7 +3637,7 @@ const mainMenuButtons = [
           pendingSearch.set(userKey, 'email');
           return bot.sendMessage(chatId, `✉️ 𝗕𝘂𝘀𝗰𝗮𝗿 𝗽𝗼𝗿 𝗘-𝗺𝗮𝗶𝗹\n\nEnvie o *E-mail* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
-        return sendResults(chatId, 'email', args, pool, threadId);
+        return sendResults(chatId, 'email', args, pool, threadId, 'full', username);
       }
 
       if (command === '/total' || command === '/db') {
@@ -3685,7 +3701,7 @@ const mainMenuButtons = [
           pendingSearch.set(userKey, 'SENHA');
           return bot.sendMessage(chatId, `🔒 𝗕𝘂𝘀𝗰𝗮𝗿 𝗽𝗼𝗿 𝗦𝗲𝗻𝗵𝗮\n\nEnvie a *Senha* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
-        return sendResults(chatId, 'SENHA', args, pool, threadId);
+        return sendResults(chatId, 'SENHA', args, pool, threadId, 'full', username);
       }
 
       if (command === '/telefone' || command === '/tel' || command === '/phone') {
@@ -3693,7 +3709,7 @@ const mainMenuButtons = [
           pendingSearch.set(userKey, 'TELEFONE');
           return bot.sendMessage(chatId, `📞 𝗕𝘂𝘀𝗰𝗮𝗿 𝗽𝗼𝗿 𝗧𝗲𝗹𝗲𝗳𝗼𝗻𝗲\n\nEnvie o *Telefone* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
-        return sendResults(chatId, 'TELEFONE', args, pool, threadId);
+        return sendResults(chatId, 'TELEFONE', args, pool, threadId, 'full', username);
       }
 
       // /inmail — busca por provedor de email
@@ -3749,30 +3765,6 @@ const mainMenuButtons = [
         return sendInurlResults(chatId, args || ':8443', pool, threadId);
       }
 
-      if (false) { // Removido duplicado
-        if (chatId.toString() !== process.env.ADMIN_ID && chatId !== 2135466806) {
-          return bot.sendMessage(chatId, `❌ Comando restrito.`, opts());
-        }
-        try {
-          const results = await Promise.allSettled(
-            pool.pools.map(p => p.query(`SELECT reltuples::bigint AS count FROM pg_class WHERE relname = 'credentials'`))
-          );
-          let total = 0;
-          results.forEach((r, i) => {
-            const count = r.status === 'fulfilled' ? Number(r.value.rows[0]?.count || 0) : 0;
-            total += count;
-          });
-          const formatted = total.toLocaleString('pt-BR');
-          await bot.sendMessage(
-            chatId,
-            `📊 *TOTAL:* \`${formatted}\``,
-            opts({ parse_mode: 'Markdown' })
-          );
-        } catch (e) {
-          bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
-        }
-        return;
-      }
       // /subdominios — busca logins por subdomínios
       if (command === '/subdominios') {
         if (!args || args.trim().length < 3) {
@@ -3895,7 +3887,7 @@ const mainMenuButtons = [
           clearTimeout(t);
           const geo = await geoRes.json();
 
-          if (geo.status !== 'primary') {
+          if (geo.status !== 'success') {
             return bot.sendMessage(chatId, `❌ Erro na geolocalização: ${geo.message || 'unknown'}`, opts({ parse_mode: 'Markdown' }));
           }
 
@@ -4200,11 +4192,77 @@ const mainMenuButtons = [
           }
         }
         
+        const value = text.trim();
+        if (!value || value.length < 2) return bot.sendMessage(chatId, `❌ Valor inválido.`, opts());
+        
+        // Consulta SERPRO Radar (placa / cnh)
+        if (pendingConsultaKey === 'placa' || pendingConsultaKey === 'cnh') {
+          bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
+          try {
+            const dados = pendingConsultaKey === 'placa'
+              ? await consultarPlaca(value)
+              : await consultarCpf(value);
+            if (dados.error) {
+              return bot.sendMessage(chatId, `❌ ${dados.error}`, opts());
+            }
+            let msg;
+            if (pendingConsultaKey === 'placa') {
+              msg = `🚗 *PLACA*\n\n`;
+              msg += `🔢 *Placa:* ${dados.placa || '---'}\n`;
+              msg += `🔩 *Chassi:* ${dados.chassi || '---'}\n`;
+              msg += `📋 *Renavam:* ${dados.codigoRenavam || '---'}\n`;
+              msg += `🚘 *Marca/Modelo:* ${dados.descricaoMarcaModelo || '---'}\n`;
+              if (dados.descricaoCor) msg += `🎨 *Cor:* ${dados.descricaoCor}\n`;
+              if (dados.anoModelo) msg += `📅 *Ano Modelo:* ${dados.anoModelo}\n`;
+              if (dados.anoFabricacao) msg += `🏭 *Ano Fab:* ${dados.anoFabricacao}\n`;
+              if (dados.descricaoCombustivel) msg += `⛽ *Combustível:* ${dados.descricaoCombustivel}\n`;
+              if (dados.descricaoTipoVeiculo) msg += `🚙 *Tipo:* ${dados.descricaoTipoVeiculo}\n`;
+              if (dados.descricaoEspecieVeiculo) msg += `📌 *Espécie:* ${dados.descricaoEspecieVeiculo}\n`;
+              if (dados.descricaoCategoria) msg += `🏷️ *Categoria:* ${dados.descricaoCategoria}\n`;
+              if (dados.situacao) msg += `✅ *Situação:* ${dados.situacao}\n`;
+              if (dados.descricaoMunicipioEmplacamento) msg += `📍 *Município:* ${dados.descricaoMunicipioEmplacamento}/${dados.ufJurisdicao || ''}\n`;
+              if (dados.nomeProprietario) msg += `👤 *Proprietário:* ${dados.nomeProprietario} (${dados.numeroIdentificacaoProprietario || '---'})\n`;
+              if (dados.descricaoTipoProprietario) msg += `👥 *Tipo:* ${dados.descricaoTipoProprietario}\n`;
+              if (dados.lotacao) msg += `👥 *Lotação:* ${dados.lotacao} passageiros\n`;
+              if (dados.potencia) msg += `⚡ *Potência:* ${dados.potencia} CV\n`;
+              if (dados.procedencia) msg += `🌍 *Procedência:* ${dados.procedencia}\n`;
+              if (dados.dataEmissaoCrv) msg += `📄 *Emissão CRV:* ${dados.dataEmissaoCrv}\n`;
+              if (dados.indicadorRouboFurto) msg += `🚨 *Roubo/Furto:* ${dados.indicadorRouboFurto}\n`;
+              if (dados.indicadorLeilao) msg += `🔨 *Leilão:* ${dados.indicadorLeilao}\n`;
+            } else {
+              msg = `👤 *CNH/CPF*\n\n`;
+              msg += `👤 *Nome:* ${dados.nome || '---'}\n`;
+              msg += `📋 *CPF:* ${dados.cpf || '---'}\n`;
+              if (dados.dataNascimento) msg += `🎂 *Nasc:* ${dados.dataNascimento}\n`;
+              if (dados.descricaoSexo) msg += `⚤ *Sexo:* ${dados.descricaoSexo}\n`;
+              if (dados.nomeMae) msg += `👩 *Mãe:* ${dados.nomeMae}\n`;
+              if (dados.nomePai) msg += `👨 *Pai:* ${dados.nomePai}\n`;
+              if (dados.numeroDocumento) msg += `🆔 *RG:* ${dados.numeroDocumento} ${dados.orgaoExpedidorDocumento ? `(${dados.orgaoExpedidorDocumento}/${dados.ufExpedidorDocumento})` : ''}\n`;
+              msg += `\n📌 *Endereço:*\n`;
+              msg += `${dados.enderecoLogradouro || ''}, ${dados.enderecoNumero || ''}${dados.enderecoComplemento ? ' - '+dados.enderecoComplemento : ''}\n`;
+              msg += `${dados.enderecoBairro ? dados.enderecoBairro+', ' : ''}${dados.descricaoEnderecoMunicipio || ''}/${dados.enderecoUf || ''}\n`;
+              msg += `CEP: ${dados.enderecoCep || '---'}\n`;
+              msg += `\n🚗 *CNH:*\n`;
+              if (dados.numeroRegistro) msg += `🔢 *Registro:* ${dados.numeroRegistro}\n`;
+              if (dados.categoriaAtual) msg += `📋 *Categoria:* ${dados.categoriaAtual}\n`;
+              if (dados.descricaoSituacaoCnh) msg += `✅ *Situação:* ${dados.descricaoSituacaoCnh}\n`;
+              if (dados.dataValidadeCnh) msg += `📅 *Validade:* ${dados.dataValidadeCnh}\n`;
+              if (dados.dataPrimeiraHabilitacao) msg += `🕐 *1ª Habilitação:* ${dados.dataPrimeiraHabilitacao} (${dados.ufPrimeiraHabilitacao || ''})\n`;
+            }
+            msg += `\n@controletotal`;
+            return bot.sendMessage(chatId, msg, opts({
+              parse_mode: 'Markdown',
+              reply_markup: { inline_keyboard: [[{ text: '🔍 NOVA BUSCA', callback_data: 'fazer_outra', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] }
+            }));
+          } catch (e) {
+            console.error(`Erro SERPRO ${pendingConsultaKey}:`, e.message);
+            return bot.sendMessage(chatId, `❌ Erro: ${e.message}`, opts());
+          }
+        }
+        
         // Tratamento original para outras consultas
         const api = CONSULTA_APIS[pendingConsultaKey];
         if (!api) return bot.sendMessage(chatId, `❌ API inválida.`, opts());
-        const value = text.trim();
-        if (!value || value.length < 2) return bot.sendMessage(chatId, `❌ Valor inválido.`, opts());
         
         // Consulta SIPNI direta (sem Express)
         if (SIPNI_CONSULTAS[pendingConsultaKey]) {
@@ -4695,12 +4753,12 @@ const mainMenuButtons = [
               reply_markup: { inline_keyboard: [[{ text: '📋 USER:PASS (PREMIUM)', callback_data: `chk_${queryId}` }, { text: '📋 URL:USER:PASS (PREMIUM)', callback_data: `chk2_${queryId}` }, { text: '📄 FULL', callback_data: `full_${queryId}` }, { text: '🌐 SUBDOMÍNIOS', callback_data: `sub_${queryId}` }], [{ text: '📊 JSON', callback_data: `json_${queryId}` }, { text: '📊 CSV', callback_data: `csv_${queryId}` }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] }
             }));
           },
-          email: () => sendResults(chatId, 'email', searchValue, pool, threadId),
+          email: () => sendResults(chatId, 'email', searchValue, pool, threadId, 'full', username),
           inurl: () => sendInurlResults(chatId, searchValue, pool, threadId),
-          inmail: () => sendResults(chatId, 'email', `%${searchValue}%`, pool, threadId),
+          inmail: () => sendResults(chatId, 'email', `%${searchValue}%`, pool, threadId, 'full', username),
           user: () => sendUserResults(chatId, searchValue, pool, threadId),
-          senha: () => sendResults(chatId, 'SENHA', searchValue, pool, threadId),
-          telefone: () => sendResults(chatId, 'TELEFONE', searchValue, pool, threadId),
+          senha: () => sendResults(chatId, 'SENHA', searchValue, pool, threadId, 'full', username),
+          telefone: () => sendResults(chatId, 'TELEFONE', searchValue, pool, threadId, 'full', username),
           ip: () => sendIpResults(chatId, searchValue, pool, threadId),
           cpf: () => sendCpfResults(chatId, searchValue, pool, threadId),
           cnpj: () => sendCnpjResults(chatId, searchValue, pool, threadId),
@@ -4929,6 +4987,7 @@ const mainMenuButtons = [
         [{ text: '👩 Nome da Mãe', callback_data: 'consultar_mae', style: 'primary' }, { text: '👨 Nome do Pai', callback_data: 'consultar_pai', style: 'primary' }],
         [{ text: '🆔 RG',  callback_data: 'consultar_rg',  style: 'primary' }, { text: '📞 Telefone', callback_data: 'consultar_tel', style: 'primary' }],
         [{ text: '✅ Situação CPF', callback_data: 'consultar_sit_cpf', style: 'primary' }, { text: '🗳️ Título Eleitor', callback_data: 'consultar_titulo', style: 'primary' }],
+        [{ text: '🚗 Placa', callback_data: 'consultar_placa', style: 'primary' }, { text: '🆔 CNH/CPF', callback_data: 'consultar_cnh', style: 'primary' }],
         [{ text: '� MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
       ]}})
     );
@@ -4946,6 +5005,7 @@ const mainMenuButtons = [
     const userKey = `${chatId}_${userId}`;
     const opts = (o = {}) => threadId ? { message_thread_id: threadId, ...o } : o;
     const cbIsGroup = msg.chat && (msg.chat.type === 'group' || msg.chat.type === 'supergroup');
+    const cbUsername = callbackQuery.from.username ? `@${callbackQuery.from.username}` : (callbackQuery.from.first_name || 'Anon');
 
     // ── MODO GRUPO: todos do grupo podem usar ──
     if (cbIsGroup) {
@@ -4971,7 +5031,7 @@ const mainMenuButtons = [
         }
       }
 
-      return sendResults(chatId, stored.field, stored.query, pool, stored.threadId, format);
+      return sendResults(chatId, stored.field, stored.query, pool, stored.threadId, format, cbUsername);
     }
 
     // Botão VOLTAR AO MENU PRINCIPAL
@@ -5170,25 +5230,14 @@ const mainMenuButtons = [
           userStatus = `📋 *Seu plano:* ${plan}\n${remainingText}${resetText}${expText}\n\n━━━━━━━━━━━━━━━━━━━━\n\n`;
         }
       } catch (e) {}
-      const plansText =
-        `💎 *PLANOS DISPONÍVEIS*\n\n` +
-        userStatus +
-        `🚀 *STARTER* · R\$ 4,12\n` +
-        `   ⏳ 7 dias · 🔍 15/dia · 📄 250\n\n` +
-        `⭐ *PREMIUM* · R\$ 8,20\n` +
-        `   ⏳ 15 dias · 🔍 50/dia · 📄 500\n\n` +
-        `👑 *VIP* · R\$ 13,70\n` +
-        `   ⏳ 30 dias · 🔍 200/dia · 📄 1000\n\n` +
-        `💎 *ECONOMIC* · R\$ 5,45\n` +
-        `   ⏳ 1 dia · 🔍 50/dia · 📄 300\n\n` +
-        `🔹 *ADVANCED* · R\$ 10,95\n` +
-        `   ⏳ 7 dias · 🔍 100/dia · 📄 800\n\n` +
-        `🔹 *ULTRA* · R\$ 19,20\n` +
-        `   ⏳ 30 dias · 🔍 500/dia · 📄 5000\n\n` +
-        `👑 *ELITE* · R\$ 82,50\n` +
-        `   ♾️ Vitalício · 🔍 Ilimitadas · 📄 50000`;
+      const planQuote = (p) => {
+        const daysStr = p.days ? `⏳ ${p.days}d` : '♾️ Vitalício';
+        return `> ${p.emoji} ${p.label} — *${escV2(`R$${(p.priceCents / 100).toFixed(0)}`)}* \\(${escV2(daysStr)}\\)`;
+      };
+      const planList = PLANS.map(p => planQuote(p)).join('\n');
+      const plansText = `💎 *PLANOS DISPONÍVEIS*\n\n${userStatus}${planList}`;
       const plansMarkup = {
-        parse_mode: 'Markdown',
+        parse_mode: 'MarkdownV2',
         reply_markup: {
           inline_keyboard: [
             [{ text: '🛒 COMPRAR STARTER', url: 'https://t.me/controletotal', style: 'primary' }],
@@ -5223,30 +5272,21 @@ const mainMenuButtons = [
         const plan = userData?.plan || '—';
         const maxResults = plan === 'STARTER' ? '5.000' : plan === 'PRO' ? '20.000' : plan === 'POWER' ? 'Ilimitado' : '100';
         
+        const cfgEsc = (s) => s.replace(/([\(\)\.\!\-])/g, '\\$1');
         const statusText = isPremium 
-          ? `✅ *Plano Ativo*\n📋 Plano: ${plan}\n📅 Expira em: ${expiresIn}\n📊 Limite: ${maxResults}`
-          : `❌ *Plano Não Ativado*\n📊 Limite: ${maxResults}`;
+          ? `✅ *Plano Ativo*\n📋 Plano: ${cfgEsc(plan)}\n📅 Expira em: ${cfgEsc(expiresIn)}\n📊 Limite: ${cfgEsc(maxResults)}`
+          : `❌ *Plano Não Ativado*\n📊 Limite: ${cfgEsc(maxResults)}`;
         
-        const planTable =
-          `🚀 *STARTER* · R\$ 4,12\n` +
-          `   ⏳ 7d · 🔍 15/dia · 📄 250\n\n` +
-          `⭐ *PREMIUM* · R\$ 8,20\n` +
-          `   ⏳ 15d · 🔍 50/dia · 📄 500\n\n` +
-          `👑 *VIP* · R\$ 13,70\n` +
-          `   ⏳ 30d · 🔍 200/dia · 📄 1000\n\n` +
-          `💎 *ECONOMIC* · R\$ 5,45\n` +
-          `   ⏳ 1d · 🔍 50/dia · 📄 300\n\n` +
-          `🔹 *ADVANCED* · R\$ 10,95\n` +
-          `   ⏳ 7d · 🔍 100/dia · 📄 800\n\n` +
-          `🔹 *ULTRA* · R\$ 19,20\n` +
-          `   ⏳ 30d · 🔍 500/dia · 📄 5000\n\n` +
-          `👑 *ELITE* · R\$ 82,50\n` +
-          `   ♾️ Vitalício · 🔍 Ilimitadas · 📄 50000`;
+        const planQuote = (p) => {
+          const daysStr = p.days ? `⏳ ${p.days}d` : '♾️ Vitalício';
+          return `> ${p.emoji} ${p.label} — *${cfgEsc(`R$${(p.priceCents / 100).toFixed(0)}`)}* \\(${cfgEsc(daysStr)}\\)`;
+        };
+        const planTable2 = PLANS.map(p => planQuote(p)).join('\n');
         
         return bot.sendMessage(chatId,
-          `⚙️ *CONFIGURAÇÕES*\n\n${statusText}\n\n📋 *TABELA DE PLANOS*\n${planTable}\n\nEscolha uma opção:`,
+          `⚙️ *CONFIGURAÇÕES*\n\n${statusText}\n\n📋 *TABELA DE PLANOS*\n${planTable2}\n\nEscolha uma opção:`,
           opts({
-            parse_mode: 'Markdown',
+            parse_mode: 'MarkdownV2',
             reply_markup: {
               inline_keyboard: [
                 [{ text: '🔑 INSERIR API KEY', callback_data: 'config_api_key', style: 'primary' }],
@@ -5563,6 +5603,8 @@ const mainMenuButtons = [
       consultar_tel:     { key: 'tel',    label: 'Telefone',       example: '11987654321' },
       consultar_sit_cpf: { key: 'sit_cpf', label: 'CPF',           example: '03140433735' },
       consultar_titulo:  { key: 'titulo', label: 'Título Eleitor', example: '123456789012' },
+      consultar_placa:   { key: 'placa',  label: 'Placa',          example: 'ABC1D23' },
+      consultar_cnh:     { key: 'cnh',    label: 'CNH/CPF',        example: '03140433735' },
     };
 
     if (consultaButtons[data]) {
@@ -6232,6 +6274,7 @@ const mainMenuButtons = [
       checkerStopSet.add(targetChatId);
       return;
     }
+
   });
 
   app.get('/api/bot', (req, res) => {
@@ -6916,7 +6959,7 @@ async function sendGeoIpResults(chatId, ip, threadId) {
     const data = await res.json();
     await bot.deleteMessage(chatId, loadingMsg.message_id).catch(() => {});
     runningSearches.delete(chatId);
-    if (data.status !== 'primary') throw new Error(data.message || 'falha na consulta');
+    if (data.status !== 'success') throw new Error(data.message || 'falha na consulta');
     const text = `# GeoIP de ${ip}\n# Fonte: ip-api.com\n\n` +
       `IP: ${data.query}\n` +
       `PAÍS: ${data.country}\n` +
