@@ -16,6 +16,7 @@ import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const archiver = require('archiver');
 import zlib from 'zlib';
+import dns from 'dns/promises';
 import Stripe from 'stripe';
 import { processReplyMarkup } from './emoji-helpers.js';
 import { searchByEmail, searchByUsername, searchLeakCheck, searchXposedOrNot, searchIntelX, searchLeakLookup, formatHudsonRockResult } from './hudsonrock-api.js';
@@ -4082,6 +4083,20 @@ const mainMenuButtons = [
         linkscan_check: async (v) => {
           const data = await scanLink(v);
           bot.sendMessage(chatId, formatLink(data), opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🛠️ FERRAMENTAS', callback_data: 'tool_buscas', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } })).catch(() => {});
+          if (data && data.url) {
+            try {
+              const hostname = new URL(data.url).hostname;
+              const ips = await dns.resolve4(hostname);
+              const targetIp = ips?.[0];
+              if (targetIp) {
+                const ipData = await lookupShodan(targetIp);
+                const formatted = formatShodanResult(ipData);
+                if (formatted) {
+                  await bot.sendMessage(chatId, `🔍 *${targetIp}*\n${formatted}`, opts({ parse_mode: 'Markdown' })).catch(() => {});
+                }
+              }
+            } catch {}
+          }
         },
         revimg_check: async (v) => {
           const data = await reverseImage(v);
