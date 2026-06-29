@@ -3769,6 +3769,7 @@ const mainMenuButtons = [
             
             let msg = ``;
             if (dados.nome) msg += `👤 *Nome:* ${dados.nome}\n`;
+            if (dados.cpf) msg += `🔢 *CPF:* \`${dados.cpf}\`\n`;
             if (dados.sexo) msg += `⚤ *Sexo:* ${dados.sexo}\n`;
             if (dados.dataNascimento) msg += `🎂 *Nasc:* ${dados.dataNascimento}\n`;
             if (dados.nomeMae) msg += `👩 *Mãe:* ${dados.nomeMae}\n`;
