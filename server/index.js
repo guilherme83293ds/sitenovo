@@ -404,7 +404,7 @@ class MultiPool {
 }
 
 const botMultiPool = new MultiPool(botPools);
-const botMultiPoolPublic = new MultiPool(botPools.slice(0, botPools.length - 1));
+const botMultiPoolPublic = new MultiPool(botPools);
 if (process.env.DISABLE_TELEGRAM_BOT !== 'true') {
   setupBot(app, botMultiPool, pool, botMultiPoolPublic);
 } else {

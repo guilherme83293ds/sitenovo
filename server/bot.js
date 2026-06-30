@@ -2744,7 +2744,7 @@ const mainMenuButtons = [
               [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
               [{ text: '🎧 SUPORTE', callback_data: 'support_menu', style: 'primary' }],
               [{ text: '📜 COMANDOS', callback_data: 'list_commands', style: 'primary' }],
-              [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
+
               [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
               [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
               [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
@@ -4101,7 +4101,7 @@ const mainMenuButtons = [
             const data = await searchByEmail(monitorValue);
             await addMonitoredItem(chatId, 'email', monitorValue);
             if (!data || !data.stealers || data.stealers.length === 0) {
-              return bot.sendMessage(chatId, `✅ *Email não encontrado em breaches*\n\nO email \`${monitorValue}\` aparentemente está seguro.\n\n🔔 *Monitoramento ativado!* Você será notificado se aparecer em novos vazamentos.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '📋 MEUS MONITORADOS', callback_data: 'list_monitored' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+
             }
             let totalDevices = data.stealers.length;
             let totalCorporate = data.total_corporate_services || 0;
@@ -4126,7 +4126,7 @@ const mainMenuButtons = [
               msg += `... e mais ${data.stealers.length - 3} dispositivo(s)\n\n`;
             }
             await addMonitoredItem(chatId, 'email', monitorValue);
-            return bot.sendMessage(chatId, msg + `\n🔔 *Monitoramento ativado!* Você será notificado se aparecer em novos vazamentos.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '📋 MEUS MONITORADOS', callback_data: 'list_monitored' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+
           } catch (e) {
             return bot.sendMessage(chatId, `❌ Erro ao verificar: ${e.message}`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
           }
@@ -4137,7 +4137,7 @@ const mainMenuButtons = [
             const data = await searchByUsername(monitorValue);
             await addMonitoredItem(chatId, 'username', monitorValue);
             if (!data || !data.stealers || data.stealers.length === 0) {
-              return bot.sendMessage(chatId, `✅ *Username não encontrado em breaches*\n\nO username \`${monitorValue}\` aparentemente está seguro.\n\n🔔 *Monitoramento ativado!* Você será notificado se aparecer em novos vazamentos.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '📋 MEUS MONITORADOS', callback_data: 'list_monitored' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+
             }
             let totalDevices = data.stealers.length;
             let msg = `⚠️ *Informações encontradas para:* \`${monitorValue}\`\n\n`;
@@ -4158,7 +4158,7 @@ const mainMenuButtons = [
               msg += `... e mais ${data.stealers.length - 3} dispositivo(s)\n\n`;
             }
             await addMonitoredItem(chatId, 'username', monitorValue);
-            return bot.sendMessage(chatId, msg + `\n🔔 *Monitoramento ativado!* Você será notificado se aparecer em novos vazamentos.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '📋 MEUS MONITORADOS', callback_data: 'list_monitored' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+
           } catch (e) {
             return bot.sendMessage(chatId, `❌ Erro ao verificar: ${e.message}`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
           }
@@ -4383,7 +4383,7 @@ const mainMenuButtons = [
             [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
             [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
             [{ text: '🎧 SUPORTE', callback_data: 'support_menu', style: 'primary' }],
-            [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
+
             [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
             [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
             [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
@@ -4444,14 +4444,14 @@ const mainMenuButtons = [
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       const items = await listMonitoredItems(chatId);
       if (items.length === 0) {
-        return bot.sendMessage(chatId, `📋 *Nenhum item monitorado.*\n\nUse o menu MONITORAR para adicionar.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }]] } }));
+
       }
       const keyboard = items.map(item => [{
         text: `${item.type === 'email' ? '📧' : '👤'} ${item.value}`,
         callback_data: `remove_mon_${item.type}_${Buffer.from(item.value).toString('base64')}`,
         style: 'primary'
       }]);
-      keyboard.push([{ text: '🔔 MONITORAR NOVO', callback_data: 'monitor_menu', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }]);
+
       return bot.sendMessage(chatId, `📋 *ITENS MONITORADOS*\n\nToque para remover:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }));
     }
 
@@ -4471,7 +4471,7 @@ const mainMenuButtons = [
             callback_data: `remove_mon_${item.type}_${Buffer.from(item.value).toString('base64')}`,
             style: 'primary'
           }]);
-          keyboard.push([{ text: '🔔 MONITORAR NOVO', callback_data: 'monitor_menu', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }]);
+
           return bot.sendMessage(chatId, `📋 *ITENS MONITORADOS*\n\nToque para remover:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }));
         }
       }
@@ -5054,7 +5054,7 @@ const mainMenuButtons = [
               [{ text: '🚀 PUXAR LOGINS', callback_data: 'puxar_logins', style: 'primary' }],
             [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
             [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
-              [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
+
               [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
               [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
               [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
@@ -5076,7 +5076,7 @@ const mainMenuButtons = [
             [{ text: '🚀 PUXAR LOGINS', callback_data: 'puxar_logins', style: 'primary' }],
             [{ text: '📊 PUXAR DADOS', callback_data: 'puxar_dados', style: 'primary' }],
             [{ text: '👤 MINHA CONTA', callback_data: 'cmd_conta', style: 'primary' }],
-            [{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }],
+
             [{ text: '💎 PLANOS', callback_data: 'show_plans', style: 'primary' }],
             [{ text: '⚙️ CONFIGURAÇÕES', callback_data: 'config_menu', style: 'primary' }, { text: '🌐 IDIOMA', callback_data: 'language_menu', style: 'primary' }],
             [{ text: '📚 REFERÊNCIAS', url: 'https://t.me/+9oaCkNF_klpmMzUx', style: 'primary' }, { text: '🚪 LOGOUT', callback_data: 'logout', style: 'primary' }]
