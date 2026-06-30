@@ -40,7 +40,7 @@ class MultiClient {
   constructor(clients) { this.clients = clients; }
   async query(sql, params) {
     if (typeof sql === 'string' && (sql.startsWith('BEGIN') || sql.startsWith('COMMIT') || sql.startsWith('ROLLBACK') || sql.startsWith('SET'))) {
-      await Promise.all(this.clients.map(c => c.query(sql, params).catch(() => {})));
+      await Promise.allSettled(this.clients.map(c => c.query(sql, params).catch(() => {})));
       return { rows: [] };
     }
     const results = await Promise.all(this.clients.map(c => c.query(sql, params).catch(e => {
@@ -57,7 +57,11 @@ class MultiClient {
 class MultiPool {
   constructor(poolsArray) { this.pools = poolsArray; }
   async connect() {
-    const clients = await Promise.all(this.pools.map(p => p.connect()));
+    const results = await Promise.allSettled(this.pools.map((p, i) => p.connect().catch(e => {
+      console.warn(`MultiPool connect[${i}]:`, e?.code, e?.message?.substring(0, 120));
+      return null;
+    })));
+    const clients = results.map(r => r.value).filter(Boolean);
     return new MultiClient(clients);
   }
   async query(sql, params) {
