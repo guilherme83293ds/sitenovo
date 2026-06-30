@@ -2098,6 +2098,53 @@ export async function setupBot(app, pool, writePool, publicPool) {
      console.warn('⚠️ [BOT] Falha ao criar índice idx_sessions_tg:', err.message);
    });
 
+// Cria tabela de monitoramento
+   await _writePool.query(`
+     CREATE TABLE IF NOT EXISTS monitored_items (
+       id SERIAL PRIMARY KEY,
+       chat_id BIGINT NOT NULL,
+       type TEXT NOT NULL CHECK (type IN ('email', 'username')),
+       value TEXT NOT NULL,
+       last_check TIMESTAMPTZ,
+       created_at TIMESTAMPTZ DEFAULT NOW(),
+       UNIQUE(chat_id, type, value)
+     )
+   `).catch(err => {
+     console.warn('⚠️ [BOT] Falha ao criar tabela monitored_items:', err.message);
+   });
+
+// ── Funções de monitoramento ──
+   async function addMonitoredItem(chatId, type, value) {
+     try {
+       await _writePool.query(
+         `INSERT INTO monitored_items (chat_id, type, value) VALUES ($1, $2, $3) ON CONFLICT (chat_id, type, value) DO NOTHING`,
+         [chatId, type, value.toLowerCase().trim()]
+       );
+       return true;
+     } catch (e) { console.error('[MONITOR] add error:', e.message); return false; }
+   }
+   async function removeMonitoredItem(chatId, type, value) {
+     try {
+       await _writePool.query(`DELETE FROM monitored_items WHERE chat_id = $1 AND type = $2 AND value = $3`, [chatId, type, value.toLowerCase().trim()]);
+       return true;
+     } catch (e) { console.error('[MONITOR] remove error:', e.message); return false; }
+   }
+   async function listMonitoredItems(chatId) {
+     try {
+       const r = await _writePool.query(`SELECT type, value FROM monitored_items WHERE chat_id = $1 ORDER BY created_at DESC`, [chatId]);
+       return r.rows;
+     } catch (e) { console.error('[MONITOR] list error:', e.message); return []; }
+   }
+   async function getAllMonitoredItems() {
+     try {
+       const r = await _writePool.query(`SELECT id, chat_id, type, value FROM monitored_items ORDER BY created_at`);
+       return r.rows;
+     } catch (e) { console.error('[MONITOR] getAll error:', e.message); return []; }
+   }
+   async function updateLastCheck(id) {
+     try { await _writePool.query(`UPDATE monitored_items SET last_check = NOW() WHERE id = $1`, [id]); } catch {}
+   }
+
 // Migração: adiciona coluna last_reset na tabela bot_trials
    await _writePool.query(`ALTER TABLE bot_trials ADD COLUMN IF NOT EXISTS last_reset TIMESTAMPTZ DEFAULT NOW()`).catch(err => {
      console.warn('⚠️ [BOT] Falha ao adicionar coluna last_reset na tabela bot_trials:', err.message);
@@ -4152,6 +4199,88 @@ const mainMenuButtons = [
         return;
       }
 
+      // Verifica se está aguardando valor para monitoramento (antes do fallback genérico)
+      const monitoringState = monitoringStates.get(chatId);
+      if (monitoringState) {
+        const monitorValue = text.trim();
+        if (monitorValue.length < 1) {
+          bot.sendMessage(chatId, `❌ Valor inválido. Por favor, digite um valor válido.`, opts());
+          return;
+        }
+        monitoringStates.delete(chatId);
+        const type = monitoringState.type;
+        if (type === 'email') {
+          await bot.sendMessage(chatId, `📧 *Verificando email...*\n\n⏳ Consultando bases de dados...`, opts({ parse_mode: 'Markdown' }));
+          try {
+            const data = await searchByEmail(monitorValue);
+            await addMonitoredItem(chatId, 'email', monitorValue);
+            if (!data || !data.stealers || data.stealers.length === 0) {
+              return bot.sendMessage(chatId, `✅ *Email não encontrado em breaches*\n\nO email \`${monitorValue}\` aparentemente está seguro.\n\n🔔 *Monitoramento ativado!* Você será notificado se aparecer em novos vazamentos.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '📋 MEUS MONITORADOS', callback_data: 'list_monitored' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+            }
+            let totalDevices = data.stealers.length;
+            let totalCorporate = data.total_corporate_services || 0;
+            let totalUser = data.total_user_services || 0;
+            let msg = `⚠️ *Informações encontradas para:* \`${monitorValue}\`\n\n`;
+            msg += `📱 *Dispositivos infectados:* ${totalDevices}\n`;
+            msg += `🏢 *Serviços corporativos:* ${totalCorporate}\n`;
+            msg += `👤 *Serviços de usuário:* ${totalUser}\n\n`;
+            const recent = data.stealers.slice(0, 3);
+            recent.forEach((s, i) => {
+              const compDate = s.date_compromised ? new Date(s.date_compromised).toLocaleDateString('pt-BR') : 'N/A';
+              msg += `*Dispositivo ${i + 1}:* ${s.computer_name || 'N/A'}\n`;
+              msg += `  🖥 OS: ${s.operating_system || 'N/A'}\n`;
+              msg += `  🌐 IP: ${s.ip || 'N/A'}\n`;
+              msg += `  📅 Data: ${compDate}\n`;
+              if (s.top_logins && s.top_logins.length > 0) {
+                msg += `  🔑 Logins: ${s.top_logins.slice(0, 3).join(', ')}\n`;
+              }
+              msg += `\n`;
+            });
+            if (data.stealers.length > 3) {
+              msg += `... e mais ${data.stealers.length - 3} dispositivo(s)\n\n`;
+            }
+            await addMonitoredItem(chatId, 'email', monitorValue);
+            return bot.sendMessage(chatId, msg + `\n🔔 *Monitoramento ativado!* Você será notificado se aparecer em novos vazamentos.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '📋 MEUS MONITORADOS', callback_data: 'list_monitored' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+          } catch (e) {
+            return bot.sendMessage(chatId, `❌ Erro ao verificar: ${e.message}`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+          }
+        }
+        if (type === 'username') {
+          await bot.sendMessage(chatId, `👤 *Verificando username...*\n\n⏳ Consultando bases de dados...`, opts({ parse_mode: 'Markdown' }));
+          try {
+            const data = await searchByUsername(monitorValue);
+            await addMonitoredItem(chatId, 'username', monitorValue);
+            if (!data || !data.stealers || data.stealers.length === 0) {
+              return bot.sendMessage(chatId, `✅ *Username não encontrado em breaches*\n\nO username \`${monitorValue}\` aparentemente está seguro.\n\n🔔 *Monitoramento ativado!* Você será notificado se aparecer em novos vazamentos.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '📋 MEUS MONITORADOS', callback_data: 'list_monitored' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+            }
+            let totalDevices = data.stealers.length;
+            let msg = `⚠️ *Informações encontradas para:* \`${monitorValue}\`\n\n`;
+            msg += `📱 *Dispositivos infectados:* ${totalDevices}\n\n`;
+            const recent = data.stealers.slice(0, 3);
+            recent.forEach((s, i) => {
+              const compDate = s.date_compromised ? new Date(s.date_compromised).toLocaleDateString('pt-BR') : 'N/A';
+              msg += `*Dispositivo ${i + 1}:* ${s.computer_name || 'N/A'}\n`;
+              msg += `  🖥 OS: ${s.operating_system || 'N/A'}\n`;
+              msg += `  🌐 IP: ${s.ip || 'N/A'}\n`;
+              msg += `  📅 Data: ${compDate}\n`;
+              if (s.top_logins && s.top_logins.length > 0) {
+                msg += `  🔑 Logins: ${s.top_logins.slice(0, 3).join(', ')}\n`;
+              }
+              msg += `\n`;
+            });
+            if (data.stealers.length > 3) {
+              msg += `... e mais ${data.stealers.length - 3} dispositivo(s)\n\n`;
+            }
+            await addMonitoredItem(chatId, 'username', monitorValue);
+            return bot.sendMessage(chatId, msg + `\n🔔 *Monitoramento ativado!* Você será notificado se aparecer em novos vazamentos.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '📋 MEUS MONITORADOS', callback_data: 'list_monitored' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+          } catch (e) {
+            return bot.sendMessage(chatId, `❌ Erro ao verificar: ${e.message}`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
+          }
+        }
+        
+        return bot.sendMessage(chatId, `❌ Tipo de monitoramento inválido.`, opts());
+      }
+
       const fieldRoutes = {
           url: () => {
             const queryId = Date.now().toString(36) + Math.random().toString(36).substring(2, 5);
@@ -4184,94 +4313,6 @@ const mainMenuButtons = [
         };
         const handler = fieldRoutes[pendingField] || fieldRoutes.url;
         return handler();
-      }
-
-
-      // Verifica se está aguardando valor para monitoramento
-      const monitoringState = monitoringStates.get(chatId);
-      if (monitoringState) {
-        const monitorValue = text.trim();
-        if (monitorValue.length < 1) {
-          bot.sendMessage(chatId, `❌ Valor inválido. Por favor, digite um valor válido.`, opts());
-          return;
-        }
-        monitoringStates.delete(chatId);
-        
-        const type = monitoringState.type;
-        
-        if (type === 'email') {
-          await bot.sendMessage(chatId, `📧 *Verificando email...*\n\n⏳ Consultando bases de dados...`, opts({ parse_mode: 'Markdown' }));
-          try {
-            const data = await searchByEmail(monitorValue);
-            if (!data || !data.stealers || data.stealers.length === 0) {
-              return bot.sendMessage(chatId, `✅ *Email não encontrado em breaches*\n\nO email \`${monitorValue}\` aparentemente está seguro.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-            }
-            let totalDevices = data.stealers.length;
-            let totalCorporate = data.total_corporate_services || 0;
-            let totalUser = data.total_user_services || 0;
-            let msg = `⚠️ *Informações encontradas para:* \`${monitorValue}\`\n\n`;
-            msg += `📱 *Dispositivos infectados:* ${totalDevices}\n`;
-            msg += `🏢 *Serviços corporativos:* ${totalCorporate}\n`;
-            msg += `👤 *Serviços de usuário:* ${totalUser}\n\n`;
-            
-            const recent = data.stealers.slice(0, 3);
-            recent.forEach((s, i) => {
-              const compDate = s.date_compromised ? new Date(s.date_compromised).toLocaleDateString('pt-BR') : 'N/A';
-              msg += `*Dispositivo ${i + 1}:* ${s.computer_name || 'N/A'}\n`;
-              msg += `  🖥 OS: ${s.operating_system || 'N/A'}\n`;
-              msg += `  🌐 IP: ${s.ip || 'N/A'}\n`;
-              msg += `  📅 Data: ${compDate}\n`;
-              if (s.top_logins && s.top_logins.length > 0) {
-                msg += `  🔑 Logins: ${s.top_logins.slice(0, 3).join(', ')}\n`;
-              }
-              msg += `\n`;
-            });
-            
-            if (data.stealers.length > 3) {
-              msg += `... e mais ${data.stealers.length - 3} dispositivo(s)\n\n`;
-            }
-            
-            return bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-          } catch (e) {
-            return bot.sendMessage(chatId, `❌ Erro ao verificar: ${e.message}`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-          }
-        }
-        
-        if (type === 'username') {
-          await bot.sendMessage(chatId, `👤 *Verificando username...*\n\n⏳ Consultando bases de dados...`, opts({ parse_mode: 'Markdown' }));
-          try {
-            const data = await searchByUsername(monitorValue);
-            if (!data || !data.stealers || data.stealers.length === 0) {
-              return bot.sendMessage(chatId, `✅ *Username não encontrado em breaches*\n\nO username \`${monitorValue}\` aparentemente está seguro.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-            }
-            let totalDevices = data.stealers.length;
-            let msg = `⚠️ *Informações encontradas para:* \`${monitorValue}\`\n\n`;
-            msg += `📱 *Dispositivos infectados:* ${totalDevices}\n\n`;
-            
-            const recent = data.stealers.slice(0, 3);
-            recent.forEach((s, i) => {
-              const compDate = s.date_compromised ? new Date(s.date_compromised).toLocaleDateString('pt-BR') : 'N/A';
-              msg += `*Dispositivo ${i + 1}:* ${s.computer_name || 'N/A'}\n`;
-              msg += `  🖥 OS: ${s.operating_system || 'N/A'}\n`;
-              msg += `  🌐 IP: ${s.ip || 'N/A'}\n`;
-              msg += `  📅 Data: ${compDate}\n`;
-              if (s.top_logins && s.top_logins.length > 0) {
-                msg += `  🔑 Logins: ${s.top_logins.slice(0, 3).join(', ')}\n`;
-              }
-              msg += `\n`;
-            });
-            
-            if (data.stealers.length > 3) {
-              msg += `... e mais ${data.stealers.length - 3} dispositivo(s)\n\n`;
-            }
-            
-            return bot.sendMessage(chatId, msg, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR OUTRO', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-          } catch (e) {
-            return bot.sendMessage(chatId, `❌ Erro ao verificar: ${e.message}`, opts({ reply_markup: { inline_keyboard: [[{ text: '🔔 TENTAR NOVAMENTE', callback_data: 'monitor_menu' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu' }]] } }));
-          }
-        }
-        
-        return bot.sendMessage(chatId, `❌ Tipo de monitoramento inválido.`, opts());
       }
 
       // Mensagem sem comando — tenta ativar como key
@@ -4510,6 +4551,44 @@ const mainMenuButtons = [
         `Digite o username que deseja verificar:`,
         opts({ parse_mode: 'Markdown' })
       );
+    }
+
+    // Handler para listar monitorados
+    if (data === 'list_monitored') {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const items = await listMonitoredItems(chatId);
+      if (items.length === 0) {
+        return bot.sendMessage(chatId, `📋 *Nenhum item monitorado.*\n\nUse o menu MONITORAR para adicionar.`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔔 MONITORAR', callback_data: 'monitor_menu', style: 'primary' }], [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }]] } }));
+      }
+      const keyboard = items.map(item => [{
+        text: `${item.type === 'email' ? '📧' : '👤'} ${item.value}`,
+        callback_data: `remove_mon_${item.type}_${Buffer.from(item.value).toString('base64')}`,
+        style: 'primary'
+      }]);
+      keyboard.push([{ text: '🔔 MONITORAR NOVO', callback_data: 'monitor_menu', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }]);
+      return bot.sendMessage(chatId, `📋 *ITENS MONITORADOS*\n\nToque para remover:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }));
+    }
+
+    // Handler para remover monitorado
+    if (data.startsWith('remove_mon_')) {
+      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
+      const parts = data.split('_');
+      const remType = parts[2];
+      const remValue = Buffer.from(parts.slice(3).join('_'), 'base64').toString('utf8');
+      if (remType && remValue) {
+        await removeMonitoredItem(chatId, remType, remValue);
+        bot.editMessageText(`✅ *Removido:* ${remValue}`, { chat_id: chatId, message_id: msg.message_id, parse_mode: 'Markdown' }).catch(() => {});
+        const items = await listMonitoredItems(chatId);
+        if (items.length > 0) {
+          const keyboard = items.map(item => [{
+            text: `${item.type === 'email' ? '📧' : '👤'} ${item.value}`,
+            callback_data: `remove_mon_${item.type}_${Buffer.from(item.value).toString('base64')}`,
+            style: 'primary'
+          }]);
+          keyboard.push([{ text: '🔔 MONITORAR NOVO', callback_data: 'monitor_menu', style: 'primary' }, { text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }]);
+          return bot.sendMessage(chatId, `📋 *ITENS MONITORADOS*\n\nToque para remover:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: keyboard } }));
+        }
+      }
     }
 
     // Botão SUPORTE
@@ -5412,6 +5491,32 @@ const mainMenuButtons = [
   });
 
   console.log('🤖 Bot iniciado. Apenas comandos / são processados.');
+
+  // ── Monitoramento periódico em tempo real ──
+  async function checkMonitoredItems() {
+    try {
+      const items = await getAllMonitoredItems();
+      if (!items || items.length === 0) return;
+      for (const item of items) {
+        try {
+          const data = item.type === 'email' ? await searchByEmail(item.value) : await searchByUsername(item.value);
+          if (data && data.stealers && data.stealers.length > 0) {
+            const total = data.stealers.length;
+            await bot.sendMessage(item.chat_id,
+              `🔔 *ALERTA — ${item.type === 'email' ? 'Email' : 'Username'} monitorado!*\n\n` +
+              `📌 *${item.value}*\n📱 *Dispositivos infectados:* ${total}\n\n` +
+              `_Última verificação: ${new Date().toLocaleString('pt-BR')}_`,
+              { parse_mode: 'Markdown' }
+            ).catch(() => {});
+          }
+          await updateLastCheck(item.id);
+        } catch {}
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    } catch (e) { console.error('[MONITOR] check error:', e.message); }
+  }
+  setInterval(checkMonitoredItems, 15 * 60 * 1000);
+  setTimeout(checkMonitoredItems, 10 * 1000);
 }
 
 // ══════════════════════════════════════════════════════
