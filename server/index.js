@@ -379,7 +379,12 @@ class MultiPool {
     this.pools = poolsArray;
   }
   async connect() {
-    const clients = await Promise.all(this.pools.map(p => p.connect()));
+    const clients = (await Promise.all(this.pools.map((p, i) =>
+      p.connect().catch(e => {
+        console.warn(`MultiPool connect[${i}]:`, e?.code, e?.message?.substring(0, 120));
+        return null;
+      })
+    ))).filter(Boolean);
     return new MultiClient(clients);
   }
   // Query paralela simplificada — pool.query direto, sem SET overhead

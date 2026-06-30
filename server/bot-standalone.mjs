@@ -57,11 +57,12 @@ class MultiClient {
 class MultiPool {
   constructor(poolsArray) { this.pools = poolsArray; }
   async connect() {
-    const results = await Promise.allSettled(this.pools.map((p, i) => p.connect().catch(e => {
-      console.warn(`MultiPool connect[${i}]:`, e?.code, e?.message?.substring(0, 120));
-      return null;
-    })));
-    const clients = results.map(r => r.value).filter(Boolean);
+    const clients = (await Promise.all(this.pools.map((p, i) =>
+      p.connect().catch(e => {
+        console.warn(`MultiPool connect[${i}]:`, e?.code, e?.message?.substring(0, 120));
+        return null;
+      })
+    ))).filter(Boolean);
     return new MultiClient(clients);
   }
   async query(sql, params) {
