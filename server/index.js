@@ -68,8 +68,8 @@ const pools = dbUrls.map((url, i) => {
     connectionString: url,
     max: 20,
     idleTimeoutMillis: 600000,
-    connectionTimeoutMillis: 15000,
-    query_timeout: 35000,
+    connectionTimeoutMillis: 30000,
+    query_timeout: 60000,
     keepAlive: true,
     keepAliveInitialDelayMillis: 1000,
     ssl: { rejectUnauthorized: false }

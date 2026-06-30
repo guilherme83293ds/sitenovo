@@ -826,7 +826,7 @@ async function sendResults(chatId, field, query, pool, threadId, format = 'full'
         const seen = new Set();
         const deduped = [];
         for (const row of rows) {
-          const key = row.id ?? `${row.url}|${row.email}|${row.senha}`;
+          const key = row.numero ?? row.id ?? `${row.url}|${row.email}|${row.senha}`;
           if (!seen.has(key)) { seen.add(key); deduped.push(row); }
           if (deduped.length >= MAX_ROWS) break;
         }
@@ -1623,7 +1623,7 @@ async function sendCpfResults(chatId, query, pool, threadId) {
     // 1. Busca exata (instantânea via index)
     for (const term of searches) {
       const exactRes = await client.query(
-        `SELECT * FROM credentials WHERE numero = $1 OR email = $1 OR url = $1 OR senha = $1 OR telefone = $1 LIMIT $2`,
+        `SELECT * FROM credentials WHERE email = $1 OR url = $1 OR senha = $1 OR telefone = $1 LIMIT $2`,
         [term, MAX_ROWS]
       );
       for (const row of exactRes.rows) {
@@ -1641,15 +1641,13 @@ async function sendCpfResults(chatId, query, pool, threadId) {
         if (term.length < 3) continue;
         const partialRes = await client.query(
           `SELECT * FROM (
-            (SELECT * FROM credentials WHERE numero ILIKE $1 LIMIT ${Math.ceil(MAX_ROWS/5)})
+            (SELECT * FROM credentials WHERE email    ILIKE $1 LIMIT ${Math.ceil(MAX_ROWS/4)})
             UNION ALL
-            (SELECT * FROM credentials WHERE email    ILIKE $1 LIMIT ${Math.ceil(MAX_ROWS/5)})
+            (SELECT * FROM credentials WHERE url      ILIKE $1 LIMIT ${Math.ceil(MAX_ROWS/4)})
             UNION ALL
-            (SELECT * FROM credentials WHERE url      ILIKE $1 LIMIT ${Math.ceil(MAX_ROWS/5)})
+            (SELECT * FROM credentials WHERE senha    ILIKE $1 LIMIT ${Math.ceil(MAX_ROWS/4)})
             UNION ALL
-            (SELECT * FROM credentials WHERE senha    ILIKE $1 LIMIT ${Math.ceil(MAX_ROWS/5)})
-            UNION ALL
-            (SELECT * FROM credentials WHERE telefone ILIKE $1 LIMIT ${Math.ceil(MAX_ROWS/5)})
+            (SELECT * FROM credentials WHERE telefone ILIKE $1 LIMIT ${Math.ceil(MAX_ROWS/4)})
           ) AS combined LIMIT $2`,
           [`%${term}%`, MAX_ROWS]
         );

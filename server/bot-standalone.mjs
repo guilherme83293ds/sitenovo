@@ -26,13 +26,13 @@ const pools = dbUrls.map((url, i) => {
     connectionString: url,
     max: 10,
     idleTimeoutMillis: 600000,
-    connectionTimeoutMillis: 15000,
-    query_timeout: 35000,
+    connectionTimeoutMillis: 30000,
+    query_timeout: 60000,
     keepAlive: true,
     keepAliveInitialDelayMillis: 1000,
     ssl: { rejectUnauthorized: false }
   });
-  p.on('error', () => {});
+  p.on('error', (e) => { try { process.stderr.write(`[BOT] Pool[${i}] error: ${e?.message}\n`); } catch(e){} });
   return p;
 });
 
@@ -43,7 +43,10 @@ class MultiClient {
       await Promise.all(this.clients.map(c => c.query(sql, params).catch(() => {})));
       return { rows: [] };
     }
-    const results = await Promise.all(this.clients.map(c => c.query(sql, params).catch(() => ({ rows: [] }))));
+    const results = await Promise.all(this.clients.map(c => c.query(sql, params).catch(e => {
+      console.warn('MultiClient DB:', e?.code, e?.message?.substring(0, 120));
+      return { rows: [] };
+    })));
     let allRows = [];
     for (let r of results) { if (r && r.rows) allRows = allRows.concat(r.rows); }
     return { rows: allRows, rowCount: allRows.length };
@@ -58,7 +61,10 @@ class MultiPool {
     return new MultiClient(clients);
   }
   async query(sql, params) {
-    const results = await Promise.all(this.pools.map(p => p.query(sql, params).catch(() => ({ rows: [] }))));
+    const results = await Promise.all(this.pools.map((p, i) => p.query(sql, params).catch(e => {
+      console.warn(`MultiPool DB[${i}]:`, e?.code, e?.message?.substring(0, 120));
+      return { rows: [] };
+    })));
     let allRows = [];
     for (const r of results) { if (r && r.rows) allRows = allRows.concat(r.rows); }
     return { rows: allRows, rowCount: allRows.length };
