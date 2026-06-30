@@ -23,10 +23,10 @@ if (dbUrls.length === 0) {
 
 const pools = dbUrls.map((url, i) => {
   const p = new Pool({
-    connectionString: url.replace(/-pooler/, '').replace(/&?channel_binding=require/gi, ''),
+    connectionString: url,
     max: 10,
     idleTimeoutMillis: 600000,
-    connectionTimeoutMillis: 5000,
+    connectionTimeoutMillis: 15000,
     query_timeout: 35000,
     keepAlive: true,
     keepAliveInitialDelayMillis: 1000,
@@ -81,5 +81,4 @@ try {
   process.exit(1);
 }
 
-// Keep alive
-setInterval(() => {}, 30000);
+
