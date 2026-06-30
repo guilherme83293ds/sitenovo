@@ -1,4 +1,4 @@
-import TelegramBot from 'node-telegram-bot-api';
+﻿import TelegramBot from 'node-telegram-bot-api';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -17,7 +17,6 @@ const require = createRequire(import.meta.url);
 const archiver = require('archiver');
 import zlib from 'zlib';
 import dns from 'dns/promises';
-import Stripe from 'stripe';
 import { processReplyMarkup } from './emoji-helpers.js';
 import { searchByEmail, searchByUsername, searchLeakCheck, searchXposedOrNot, searchIntelX, searchLeakLookup, formatHudsonRockResult } from './hudsonrock-api.js';
 import { searchGitHub, checkSMTP, socialScan, checkGravatar, searchHunter, checkEmailRep, formatGitHub, formatSMTP, formatSocial, formatGravatar, formatHunter, formatEmailRep } from './osint-email.js';
@@ -116,23 +115,7 @@ async function isGroupOwner(msg) {
   }
 }
 
-// ── Stripe ──
-const stripeKey = process.env.STRIPE_SECRET_KEY;
-let stripe = null;
-if (stripeKey && stripeKey !== 'sua_chave_secreta_stripe') {
-  stripe = new Stripe(stripeKey);
-}
 
-// Planos: [label, dias, preço em centavos]
-const PLANS = [
-  { label: 'STARTER', days: 7,  priceCents: 1500,  emoji: '🚀' },
-  { label: 'PREMIUM', days: 15, priceCents: 2500,  emoji: '⭐' },
-  { label: 'VIP', days: 30, priceCents: 4000, emoji: '👑' },
-  { label: 'ECONOMIC', days: 1, priceCents: 1000, emoji: '💎' },
-  { label: 'ADVANCED', days: 7, priceCents: 3000, emoji: '🔹' },
-  { label: 'ULTRA', days: 30, priceCents: 5000, emoji: '🔹' },
-  { label: 'ELITE', days: null, priceCents: 20000, emoji: '👑' },
-];
 
 async function getMaxRows(chatId) {
   const inGroup = groupChats.has(chatId);
@@ -696,7 +679,6 @@ async function getUniqueValidRows(rows, format, chatId) {
 
 // Store para guardar queries pendentes (botões inline)
 const queryStore = new Map();
-const pendingBoleto = new Map(); // chatId -> { planIdx, plan }
 const pendingSearch = new Map(); // `${chatId}_${userId}` -> fieldName
 const pendingConsulta = new Map(); // `${chatId}_${userId}` -> apiKey
 const pendingConfig = new Map(); // chatId -> 'api_key' | 'max_results'
@@ -2592,13 +2574,8 @@ export async function setupBot(app, pool, writePool, publicPool) {
       const key = row?.key || '—';
       const status = isActive ? '💎 Premium' : '🟢 Free';
       const maxResults = plan === 'STARTER' ? '5.000' : plan === 'PRO' ? '20.000' : plan === 'POWER' ? 'Ilimitado' : '100';
-      const planQuote = (p) => {
-        const daysStr = p.days ? `⏳ ${p.days}d` : '♾️ Vitalício';
-        return `> ${p.emoji} ${p.label} — *${escV2(`R$${(p.priceCents / 100).toFixed(0)}`)}* \\(${escV2(daysStr)}\\)`;
-      };
-      const planTable = PLANS.map(p => planQuote(p)).join('\n');
       const keyLine = plan !== 'FREE' && plan !== '—' ? `\n🔑 Key: \`${key}\`` : '';
-      const contaText = `👤 *MINHA CONTA*\n\n🆔 ID: \`${chatId}\`\n📊 Status: ${status}\n📋 Plano: ${escV2(plan)}${keyLine}\n📅 Expira: ${escV2(expires)}\n📈 Limite: ${escV2(maxResults)}\n\n📋 *TABELA DE PLANOS*\n${planTable}`;
+      const contaText = `👤 *MINHA CONTA*\n\n🆔 ID: \`${chatId}\`\n📊 Status: ${status}\n📋 Plano: ${escV2(plan)}${keyLine}\n📅 Expira: ${escV2(expires)}\n📈 Limite: ${escV2(maxResults)}\n\n💎 *Planos disponíveis mediante pagamento*\n_Consulte o admin para adquirir uma key._`;
       return bot.sendMessage(chatId, contaText,
         opts({
           parse_mode: 'MarkdownV2',
@@ -2752,8 +2729,8 @@ return bot.sendMessage(chatId, loginText,
 
         const inGroup = groupChats.has(chatId);
         const helpText =
-          `💀 𝗔𝗦𝗦𝗘𝗠𝗕𝗟𝗬 𝗟𝗢𝗚𝗦\n\n` +
-          `🟢 *𝗠𝗘𝗡𝗨 𝗣𝗥𝗜𝗡𝗖𝗜𝗣𝗔𝗟*\n\n` +
+          `💀 ASSEMBLY LOGS\n\n` +
+          `🟢 *MENU PRINCIPAL*\n\n` +
           `${statusLine}\n` +
           `📊 *Total records (305.384.239.394 B)*\n\n` +
           `${previewText}\n\n` +
@@ -3083,30 +3060,6 @@ const mainMenuButtons = [
         return;
       }
 
-      // ── /comprar ou /planos — Mostra planos de pagamento ──
-      if (command === '/comprar' || command === '/planos' || command === '/pagar') {
-        if (!stripe) {
-          const inGroup = groupChats.has(chatId);
-          const paymentMsg = inGroup
-            ? `❌ Pagamentos indisponíveis no momento.`
-            : `❌ Pagamentos indisponíveis no momento. Contate: ${OWNER_PROFILE}`;
-          return bot.sendMessage(chatId, paymentMsg, opts({ parse_mode: 'Markdown' }));
-        }
-        const planButtons = PLANS.map((p, i) =>
-          [{ text: `${p.emoji} ${p.label} — R$${(p.priceCents / 100).toFixed(0)}`, callback_data: `plan_${i}`, style: 'primary' }]
-        );
-        return bot.sendMessage(chatId,
-          `💳 *ESCOLHA SEU PLANO*\n\n` +
-          `Selecione abaixo o plano desejado para comprar sua key:\n\n` +
-          PLANS.map((p, i) => `> ${p.emoji} ${p.label} — *${escV2(`R$${(p.priceCents / 100).toFixed(0)}`)}*`).join('\n') +
-          `\n\n💳 *Aceitamos:* Cartão de Crédito e Boleto`,
-          opts({
-            parse_mode: 'MarkdownV2',
-            reply_markup: { inline_keyboard: [...planButtons] }
-          })
-        );
-      }
-
       // ── Verificação de acesso para comandos de busca ──
       const searchCmds = new Set(['/url', '/pesquisar', '/search', '/email', '/user', '/usuario', '/username', '/ip', '/inurl', '/senha', '/pass', '/password', '/telefone', '/tel', '/phone', '/inmail', '/cpf', '/cnpj', '/checkdomain', '/domain', '/ftp', '/smtp', '/mysql', '/port8080', '/port8443', '/whois', '/geoip', '/copyurl', '/subdominios']);
       if (searchCmds.has(command)) {
@@ -3144,7 +3097,7 @@ const mainMenuButtons = [
       if (command === '/url' || command === '/inurl' || command === '/pesquisar' || command === '/search') {
         if (!args || args.trim().length < 2) {
           pendingSearch.set(userKey, 'url');
-          return bot.sendMessage(chatId, `🔗 𝗕𝘂𝘀𝗰𝗮𝗿 𝗜𝗡𝗨𝗥𝗟\n\nEnvie o *termo* que deseja buscar na URL:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `🔗 Buscar INURL\n\nEnvie o *termo* que deseja buscar na URL:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         const queryId = Date.now().toString(36) + Math.random().toString(36).substring(2, 5);
         queryStore.set(queryId, { query: args.trim(), field: 'url', threadId });
@@ -3173,7 +3126,7 @@ const mainMenuButtons = [
       if (command === '/email') {
         if (!args || args.trim().length < 2) {
           pendingSearch.set(userKey, 'email');
-          return bot.sendMessage(chatId, `✉️ 𝗕𝘂𝘀𝗰𝗮𝗿 𝗽𝗼𝗿 𝗘-𝗺𝗮𝗶𝗹\n\nEnvie o *E-mail* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `✉️ Buscar por E-mail\n\nEnvie o *E-mail* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         return sendResults(chatId, 'email', args, pool, threadId, 'full', username);
       }
@@ -3211,7 +3164,7 @@ const mainMenuButtons = [
       if (command === '/user' || command === '/usuario' || command === '/username') {
         if (!args || args.trim().length < 2) {
           pendingSearch.set(userKey, 'user');
-          return bot.sendMessage(chatId, `👤 𝗕𝘂𝘀𝗰𝗮𝗿 𝗽𝗼𝗿 𝗨𝘀𝘂𝗮́𝗿𝗶𝗼\n\nEnvie o *Usuário* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `👤 Buscar por Usuário\n\nEnvie o *Usuário* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         return sendUserResults(chatId, args, pool, threadId);
       }
@@ -3220,7 +3173,7 @@ const mainMenuButtons = [
       if (command === '/ip') {
         if (!args || args.trim().length < 2) {
           pendingSearch.set(userKey, 'ip');
-          return bot.sendMessage(chatId, `📍 𝗕𝘂𝘀𝗰𝗮𝗿 𝗽𝗼𝗿 𝗜𝗣\n\nEnvie o *IP* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `📍 Buscar por IP\n\nEnvie o *IP* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         return sendIpResults(chatId, args, pool, threadId);
       }
@@ -3229,7 +3182,7 @@ const mainMenuButtons = [
       if (command === '/inurl') {
         if (!args || args.trim().length < 2) {
           pendingSearch.set(userKey, 'INURL');
-          return bot.sendMessage(chatId, `🔗 𝗕𝘂𝘀𝗰𝗮𝗿 𝗜𝗻𝗨𝗿𝗹\n\nEnvie o *termo* que deve conter na URL:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `🔗 Buscar InUrl\n\nEnvie o *termo* que deve conter na URL:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         return sendInurlResults(chatId, args, pool, threadId);
       }
@@ -3237,7 +3190,7 @@ const mainMenuButtons = [
       if (command === '/senha' || command === '/pass' || command === '/password') {
         if (!args || args.trim().length < 2) {
           pendingSearch.set(userKey, 'SENHA');
-          return bot.sendMessage(chatId, `🔒 𝗕𝘂𝘀𝗰𝗮𝗿 𝗽𝗼𝗿 𝗦𝗲𝗻𝗵𝗮\n\nEnvie a *Senha* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `🔒 Buscar por Senha\n\nEnvie a *Senha* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         return sendResults(chatId, 'SENHA', args, pool, threadId, 'full', username);
       }
@@ -3245,7 +3198,7 @@ const mainMenuButtons = [
       if (command === '/telefone' || command === '/tel' || command === '/phone') {
         if (!args || args.trim().length < 2) {
           pendingSearch.set(userKey, 'TELEFONE');
-          return bot.sendMessage(chatId, `📞 𝗕𝘂𝘀𝗰𝗮𝗿 𝗽𝗼𝗿 𝗧𝗲𝗹𝗲𝗳𝗼𝗻𝗲\n\nEnvie o *Telefone* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `📞 Buscar por Telefone\n\nEnvie o *Telefone* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         return sendResults(chatId, 'TELEFONE', args, pool, threadId, 'full', username);
       }
@@ -3254,7 +3207,7 @@ const mainMenuButtons = [
       if (command === '/inmail') {
         if (!args || args.trim().length < 2) {
           pendingSearch.set(userKey, 'INMAIL');
-          return bot.sendMessage(chatId, `📨 𝗕𝘂𝘀𝗰𝗮𝗿 𝗜𝗻𝗠𝗮𝗶𝗹\n\nEnvie o *provedor de e-mail*:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `📨 Buscar InMail\n\nEnvie o *provedor de e-mail*:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         return sendInmailResults(chatId, args, pool, threadId);
       }
@@ -3263,7 +3216,7 @@ const mainMenuButtons = [
       if (command === '/cpf') {
         if (!args || args.trim().length < 2) {
           pendingSearch.set(userKey, 'cpf');
-          return bot.sendMessage(chatId, `📋 𝗕𝘂𝘀𝗰𝗮𝗿 𝗽𝗼𝗿 𝗖𝗣𝗙\n\nEnvie o *CPF* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `📋 Buscar por CPF\n\nEnvie o *CPF* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         return sendCpfResults(chatId, args, pool, threadId);
       }
@@ -3272,7 +3225,7 @@ const mainMenuButtons = [
       if (command === '/cnpj') {
         if (!args || args.trim().length < 2) {
           pendingSearch.set(userKey, 'cnpj');
-          return bot.sendMessage(chatId, `🏢 𝗕𝘂𝘀𝗰𝗮𝗿 𝗽𝗼𝗿 𝗖𝗡𝗣𝗝\n\nEnvie o *CNPJ* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `🏢 Buscar por CNPJ\n\nEnvie o *CNPJ* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         return sendCnpjResults(chatId, args, pool, threadId);
       }
@@ -3281,7 +3234,7 @@ const mainMenuButtons = [
       if (command === '/checkdomain' || command === '/domain') {
         if (!args || args.trim().length < 2) {
           pendingSearch.set(userKey, 'domain');
-          return bot.sendMessage(chatId, `🌍 𝗕𝘂𝘀𝗰𝗮𝗿 𝗽𝗼𝗿 𝗗𝗼𝗺𝗶́𝗻𝗶𝗼\n\nEnvie o *Domínio* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `🌍 Buscar por Domínio\n\nEnvie o *Domínio* que deseja buscar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         return sendCheckDomainResults(chatId, args, pool, threadId);
       }
@@ -3307,7 +3260,7 @@ const mainMenuButtons = [
       if (command === '/subdominios') {
         if (!args || args.trim().length < 3) {
           pendingSearch.set(userKey, 'subdominios');
-          return bot.sendMessage(chatId, `🌐 𝗕𝘂𝘀𝗰𝗮𝗿 𝗦𝘂𝗯𝗱𝗼𝗺𝗶́𝗻𝗶𝗼𝘀\n\nEnvie o *Domínio* para buscar subdomínios:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `🌐 Buscar Subdomínios\n\nEnvie o *Domínio* para buscar subdomínios:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         return sendSubdomainResults(chatId, args.trim(), pool, threadId);
       }
@@ -3315,7 +3268,7 @@ const mainMenuButtons = [
       if (command === '/whois') {
         if (!args || args.trim().length < 7) {
           pendingSearch.set(userKey, 'WHOIS');
-          return bot.sendMessage(chatId, `🔍 𝗕𝘂𝘀𝗰𝗮𝗿 𝗪𝗵𝗼𝗶𝘀\n\nEnvie o *Telefone* para consultar (ex: +5511999999999):`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `🔍 Buscar Whois\n\nEnvie o *Telefone* para consultar (ex: +5511999999999):`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         const phone = args.trim().replace(/[\s\-\(\)]/g, '');
         bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
@@ -3390,7 +3343,7 @@ const mainMenuButtons = [
       if (command === '/geoip') {
         if (!args || args.trim().length < 3) {
           pendingSearch.set(userKey, 'GEOIP');
-          return bot.sendMessage(chatId, `📍 𝗕𝘂𝘀𝗰𝗮𝗿 𝗚𝗲𝗼𝗜𝗣\n\nEnvie o *IP* ou *Domínio* para geolocalizar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
+          return bot.sendMessage(chatId, `📍 Buscar GeoIP\n\nEnvie o *IP* ou *Domínio* para geolocalizar:`, opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } }));
         }
         const target = args.trim().replace(/^https?:\/\//i, '').replace(/^www\./i, '').split('/')[0];
         bot.sendChatAction(chatId, 'typing', opts()).catch(() => {});
@@ -3470,7 +3423,7 @@ const mainMenuButtons = [
         if (!args || args.trim().length < 3) {
           pendingSearch.set(userKey, 'copyurl');
           return bot.sendMessage(chatId,
-            `📦 𝗕𝗮𝗶𝘅𝗮𝗿 𝗣𝗮́𝗴𝗶𝗻𝗮 (𝗭𝗜𝗣)\n\nEnvie a *URL* (https://site.com):`,
+            `📦 Baixar Página (ZIP)\n\nEnvie a *URL* (https://site.com):`,
             opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]] } })
           );
         }
@@ -3482,7 +3435,6 @@ const mainMenuButtons = [
       if (command === '/cancelar') {
         const userId = msg.from?.id;
         const userKey = `${chatId}_${userId}`;
-        pendingBoleto.delete(chatId);
         pendingSearch.delete(chatId);
         pendingSearch.delete(userKey);
         pendingConsulta.delete(chatId);
@@ -3499,70 +3451,6 @@ const mainMenuButtons = [
           `❓ Comando desconhecido. Use /help para ver os comandos disponíveis.`,
           opts()
         );
-      }
-
-      // Verifica se está aguardando CPF para boleto
-      const pending = pendingBoleto.get(chatId);
-      if (pending) {
-        const cpf = text.trim().replace(/\D/g, '');
-        if (cpf.length === 11) {
-          pendingBoleto.delete(chatId);
-          try {
-            const pm = await stripe.paymentMethods.create({
-              type: 'boleto',
-              billing_details: {
-                name: msg.from?.first_name || 'Cliente',
-                email: msg.from?.username ? `${msg.from.username}@telegram.com` : 'cliente@email.com',
-                address: {
-                  line1: 'Endereço do Cliente',
-                  city: 'Sao Paulo',
-                  state: 'SP',
-                  postal_code: '00000000',
-                  country: 'BR',
-                },
-              },
-              boleto: { tax_id: cpf },
-            });
-
-            const pi = await stripe.paymentIntents.create({
-              amount: pending.plan.priceCents,
-              currency: 'brl',
-              payment_method_types: ['boleto'],
-              payment_method: pm.id,
-              confirm: true,
-              metadata: { chat_id: String(chatId), days: String(pending.plan.days) },
-            });
-
-            if (pi.next_action?.boleto_display_details) {
-              const boleto = pi.next_action.boleto_display_details;
-              await bot.sendMessage(chatId,
-                `📄 *Boleto Gerado — ${pending.plan.emoji} ${pending.plan.label}*\n\n` +
-                `📌 *Valor:* R$${(pending.plan.priceCents / 100).toFixed(0)}\n` +
-                `⏳ *Dias:* ${pending.plan.days}\n\n` +
-                `📋 *Linha Digitável:*\n\`${boleto.number}\`\n\n` +
-                `🔗 *Link do Boleto:* ${boleto.hosted_voucher_url}\n` +
-                `📎 *PDF Direto:* ${boleto.pdf}\n\n` +
-                `📅 *Vence em:* ${new Date(boleto.expires_at * 1000).toLocaleDateString('pt-BR')}\n\n` +
-                `_Após o pagamento, sua key será enviada automaticamente aqui!_`,
-                opts({ parse_mode: 'Markdown' })
-              );
-            } else {
-              bot.sendMessage(chatId, `❌ Erro ao gerar boleto. Tente novamente.`, opts());
-            }
-          } catch (err) {
-            console.error('[BOLETO ERROR]', err.message);
-            bot.sendMessage(chatId, `❌ Erro ao gerar boleto: ${err.message}`, opts());
-          }
-          return;
-        } else {
-          bot.sendMessage(chatId,
-            `❌ CPF inválido! Digite apenas os 11 números.\n` +
-            `Exemplo: \`00000000000\`\n\n` +
-            `_Ou digite /cancelar para sair._`,
-            opts({ parse_mode: 'Markdown' })
-          );
-          return;
-        }
       }
 
       // Verifica se está aguardando configuração
@@ -4431,14 +4319,14 @@ const mainMenuButtons = [
   async function showConsultaMenu(chatId, threadId) {
     const opts2 = (o = {}) => threadId ? { message_thread_id: threadId, ...o } : o;
     return bot.sendMessage(chatId,
-      `🔎 𝗖𝗼𝗻𝘀𝘂𝗹𝘁𝗮𝘀 𝗔𝘃𝗮𝗻𝗰̧𝗮𝗱𝗮𝘀 (𝗣𝗥𝗢)\n\nSelecione o tipo de consulta:`,
+      `🔎 CONSULTAS AVANCADAS\n\nSelecione o tipo de consulta:`,
       opts2({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
         [{ text: '🔢 CPF',     callback_data: 'consultar_cpf',     style: 'primary' }, { text: '👤 Nome', callback_data: 'consultar_nome', style: 'primary' }],
         [{ text: '👩 Nome da Mãe', callback_data: 'consultar_mae', style: 'primary' }, { text: '👨 Nome do Pai', callback_data: 'consultar_pai', style: 'primary' }],
         [{ text: '🆔 RG',  callback_data: 'consultar_rg',  style: 'primary' }, { text: '📞 Telefone', callback_data: 'consultar_tel', style: 'primary' }],
         [{ text: '✅ Situação CPF', callback_data: 'consultar_sit_cpf', style: 'primary' }, { text: '🗳️ Título Eleitor', callback_data: 'consultar_titulo', style: 'primary' }],
         [{ text: '🚗 Placa', callback_data: 'consultar_placa', style: 'primary' }, { text: '🆔 CNH/CPF', callback_data: 'consultar_cnh', style: 'primary' }],
-        [{ text: '� MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
+        [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
       ]}})
     );
   }
@@ -4701,50 +4589,18 @@ const mainMenuButtons = [
       );
     }
 
-    // Botão PLANOS — Mostrar planos disponíveis
+    // Botão PLANOS — Redireciona para o admin
     if (data === 'show_plans') {
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-      let userStatus = '';
-      try {
-        const user = await _writePool.query(`SELECT plan, expires_at FROM user_sessions WHERE telegram_id = $1 ORDER BY CASE WHEN plan = 'FREE' THEN 1 ELSE 0 END, id DESC LIMIT 1`, [chatId]);
-        if (user.rows.length > 0) {
-          const plan = user.rows[0].plan;
-          const exp = user.rows[0].expires_at;
-          const { remaining, resetIn } = getRemainingSearches(chatId, plan);
-          const remainingText = remaining === Infinity ? '♾️ Ilimitadas' : `🔍 ${remaining} restantes`;
-          const resetText = resetIn ? ` · ⏳ Renova em ${resetIn}` : '';
-          const expText = exp ? ` · 📅 Expira ${new Date(exp).toLocaleDateString('pt-BR')}` : '';
-          userStatus = `📋 *Seu plano:* ${plan}\n${remainingText}${resetText}${expText}\n\n━━━━━━━━━━━━━━━━━━━━\n\n`;
-        }
-      } catch (e) {}
-      const planQuote = (p) => {
-        const daysStr = p.days ? `⏳ ${p.days}d` : '♾️ Vitalício';
-        return `> ${p.emoji} ${p.label} — *${escV2(`R$${(p.priceCents / 100).toFixed(0)}`)}* \\(${escV2(daysStr)}\\)`;
-      };
-      const planList = PLANS.map(p => planQuote(p)).join('\n');
-      const plansText = `💎 *PLANOS DISPONÍVEIS*\n\n${userStatus}${planList}`;
-      const plansMarkup = {
-        parse_mode: 'MarkdownV2',
-        reply_markup: {
-          inline_keyboard: [
-            [{ text: '🛒 COMPRAR STARTER', url: 'https://t.me/controletotal', style: 'primary' }],
-            [{ text: '🛒 COMPRAR PREMIUM', url: 'https://t.me/controletotal', style: 'primary' }],
-            [{ text: '🛒 COMPRAR VIP', url: 'https://t.me/controletotal', style: 'primary' }],
-            [{ text: '🛒 COMPRAR ECONOMIC', url: 'https://t.me/controletotal', style: 'primary' }],
-            [{ text: '🛒 COMPRAR ADVANCED', url: 'https://t.me/controletotal', style: 'primary' }],
-            [{ text: '🛒 COMPRAR ULTRA', url: 'https://t.me/controletotal', style: 'primary' }],
-            [{ text: '🛒 COMPRAR ELITE', url: 'https://t.me/controletotal', style: 'primary' }],
-            [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
-          ]
-        }
-      };
-      if (fs.existsSync(PLANOS_BANNER)) {
-        return bot.sendPhoto(chatId, PLANOS_BANNER, opts({ caption: plansText, ...plansMarkup })).catch(() =>
-          bot.sendMessage(chatId, plansText, opts(plansMarkup))
-        );
-      }
-      return bot.sendMessage(chatId, plansText, opts(plansMarkup));
+      const inGroup = groupChats.has(chatId);
+      const plansMsg = inGroup
+        ? `💬 *Comprar Key Premium*\n\nEntre em contato no privado para adquirir sua key.`
+        : `💬 *Comprar Key Premium*\n\nEntre em contato com o admin para adquirir sua key:\n${OWNER_PROFILE}`;
+      const plansMarkup = inGroup
+        ? { inline_keyboard: [] }
+        : { inline_keyboard: [[{ text: '👨‍💻 FALAR COM ADMIN', url: OWNER_PROFILE }]] };
+      return bot.sendMessage(chatId, plansMsg, opts({ parse_mode: 'Markdown', reply_markup: plansMarkup }));
     }
 
     // Botão CONFIGURAÇÕES
@@ -4765,14 +4621,8 @@ const mainMenuButtons = [
           ? `✅ *Plano Ativo*\n📋 Plano: ${cfgEsc(plan)}\n📅 Expira em: ${cfgEsc(expiresIn)}\n📊 Limite: ${cfgEsc(maxResults)}`
           : `❌ *Plano Não Ativado*\n📊 Limite: ${cfgEsc(maxResults)}`;
         
-        const planQuote = (p) => {
-          const daysStr = p.days ? `⏳ ${p.days}d` : '♾️ Vitalício';
-          return `> ${p.emoji} ${p.label} — *${cfgEsc(`R$${(p.priceCents / 100).toFixed(0)}`)}* \\(${cfgEsc(daysStr)}\\)`;
-        };
-        const planTable2 = PLANS.map(p => planQuote(p)).join('\n');
-        
         return bot.sendMessage(chatId,
-          `⚙️ *CONFIGURAÇÕES*\n\n${statusText}\n\n📋 *TABELA DE PLANOS*\n${planTable2}\n\nEscolha uma opção:`,
+          `⚙️ *CONFIGURAÇÕES*\n\n${statusText}\n\n💎 *Planos disponíveis:*\n_Consulte o admin para adquirir uma key._\n\nEscolha uma opção:`,
           opts({
             parse_mode: 'MarkdownV2',
             reply_markup: {
@@ -4871,7 +4721,7 @@ const mainMenuButtons = [
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       return bot.sendMessage(chatId,
-        `🔍 𝗠𝗢́𝗗𝗨𝗟𝗢𝗦 𝗗𝗘 𝗕𝗨𝗦𝗖𝗔\n\nEscolha uma categoria:`,
+        `🔍 MÓDULOS DE BUSCA\n\nEscolha uma categoria:`,
         opts({
           parse_mode: 'Markdown',
           reply_markup: {
@@ -4880,7 +4730,7 @@ const mainMenuButtons = [
               [{ text: '✉️ EMAILS', callback_data: 'mod_emails', style: 'primary' }],
               [{ text: '👤 USUÁRIOS', callback_data: 'mod_usuarios', style: 'primary' }],
               [{ text: '📞 TELEFONE', callback_data: 'mod_telefone', style: 'primary' }],
-              [{ text: ' CONSULTAS AVANÇADAS', callback_data: 'puxar_dados', style: 'primary' }],
+              [{ text: '🔎 CONSULTAS AVANCADAS', callback_data: 'puxar_dados', style: 'primary' }],
               [{ text: '🏠 MENU PRINCIPAL', callback_data: 'cmd_menu', style: 'primary' }, { text: '🔴 FECHAR', callback_data: 'cancel_search', style: 'primary' }]
             ]
           }
@@ -4893,7 +4743,7 @@ const mainMenuButtons = [
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       return bot.sendMessage(chatId,
-        `🔗 𝗠𝗼́𝗗𝘂𝗟𝗢 𝗨𝗥𝗟𝗦\n\nEscolha a busca:`,
+        `🔗 MÓDULO URLS\n\nEscolha a busca:`,
         opts({
           parse_mode: 'Markdown',
           reply_markup: {
@@ -4912,7 +4762,7 @@ const mainMenuButtons = [
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       return bot.sendMessage(chatId,
-        `✉️ 𝗠𝗼́𝗗𝘂𝗟𝗢 𝗘𝗠𝗔𝗜𝗟𝗦\n\nEscolha a busca:`,
+        `✉️ MÓDULO EMAILS\n\nEscolha a busca:`,
         opts({
           parse_mode: 'Markdown',
           reply_markup: {
@@ -4931,7 +4781,7 @@ const mainMenuButtons = [
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       return bot.sendMessage(chatId,
-        `👤 𝗠𝗼́𝗗𝘂𝗟𝗢 𝗨𝗦𝗨𝗔́𝗥𝗜𝗢𝗦\n\nEscolha a busca:`,
+        `👤 MÓDULO USUÁRIOS\n\nEscolha a busca:`,
         opts({
           parse_mode: 'Markdown',
           reply_markup: {
@@ -4950,7 +4800,7 @@ const mainMenuButtons = [
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       return bot.sendMessage(chatId,
-        `📞 𝗠𝗼́𝗗𝘂𝗟𝗢 𝗧𝗘𝗟𝗘𝗙𝗢𝗡𝗘\n\nEscolha a busca:`,
+        `📞 MÓDULO TELEFONE\n\nEscolha a busca:`,
         opts({
           parse_mode: 'Markdown',
           reply_markup: {
@@ -4969,7 +4819,7 @@ const mainMenuButtons = [
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       return bot.sendMessage(chatId,
-        `📋 𝗠𝗢́𝗗𝘂𝗟𝗢 𝗗𝗔𝗗𝗢𝗦\n\nEscolha a busca:`,
+        `📋 MÓDULO DADOS\n\nEscolha a busca:`,
         opts({
           parse_mode: 'Markdown',
           reply_markup: {
@@ -4988,7 +4838,7 @@ const mainMenuButtons = [
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       return bot.sendMessage(chatId,
-        `🌍 𝗠𝗢́𝗗𝘂𝗟𝗢 𝗗𝗢𝗠𝗜𝗡𝗜𝗢𝗦\n\nEscolha a busca:`,
+        `🌍 MÓDULO DOMÍNIOS\n\nEscolha a busca:`,
         opts({
           parse_mode: 'Markdown',
           reply_markup: {
@@ -5008,7 +4858,7 @@ const mainMenuButtons = [
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       return bot.sendMessage(chatId,
-        `🔌 𝗠𝗢́𝗗𝘂𝗟𝗢 𝗣𝗥𝗢𝗧𝗢𝗖𝗢𝗟𝗢𝗦\n\nEscolha a busca:`,
+        `🔌 MÓDULO PROTOCOLOS\n\nEscolha a busca:`,
         opts({
           parse_mode: 'Markdown',
           reply_markup: {
@@ -5119,7 +4969,7 @@ const mainMenuButtons = [
       bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
       return bot.sendMessage(chatId,
-        `🚀 𝗣𝗨𝗫𝗔𝗥 �𝗔𝗗𝗢𝗦\n\nEscolha o módulo de busca:`,
+        `🚀 PUXAR LOGINS\n\nEscolha o módulo de busca:`,
         opts({
           parse_mode: 'Markdown',
           reply_markup: {
@@ -5193,7 +5043,6 @@ const mainMenuButtons = [
         runningSearches.delete(chatId);
       }
       pendingSearch.delete(chatId);
-      pendingBoleto.delete(chatId);
       pendingConsulta.delete(chatId);
       bot.answerCallbackQuery(callbackQuery.id, { text: '⏹ Busca cancelada' }).catch(() => {});
       bot.deleteMessage(chatId, msg.message_id).catch(() => {});
@@ -5361,128 +5210,7 @@ const mainMenuButtons = [
       return;
     }
 
-    // Botão VER PLANOS
-    if (data === 'show_plans') {
-      bot.answerCallbackQuery(callbackQuery.id).catch(() => {});
-      const inGroup = groupChats.has(chatId);
-      const plansMsg = inGroup
-        ? `💬 *Comprar Key Premium*\n\n` +
-          `Entre em contato no privado para adquirir sua key.`
-        : `💬 *Comprar Key Premium*\n\n` +
-          `Entre em contato comigo pra adquirir sua key:\n` +
-          `${OWNER_PROFILE}`;
-      const plansMarkup = inGroup
-        ? { inline_keyboard: [] }
-        : { inline_keyboard: [[{ text: '👨‍💻 FALAR COM ADMIN', url: OWNER_PROFILE }]] };
-      return bot.sendMessage(chatId, plansMsg, opts({ parse_mode: 'Markdown', reply_markup: plansMarkup }));
-    }
 
-    // Botão PLANO SELECIONADO — mostra escolha Cartão ou Boleto
-    if (data.startsWith('plan_')) {
-      const planIdx = parseInt(data.substring(5));
-      const plan = PLANS[planIdx];
-      if (!plan) {
-        bot.answerCallbackQuery(callbackQuery.id, { text: 'Plano inválido!' }).catch(() => {});
-        return;
-      }
-      bot.answerCallbackQuery(callbackQuery.id, { text: `${plan.label} selecionado!` }).catch(() => {});
-      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-
-      await bot.sendMessage(chatId,
-        `💳 *${plan.emoji} ${plan.label}*\n\n` +
-        `📌 *Valor:* R$${(plan.priceCents / 100).toFixed(0)}\n` +
-        `⏳ *Dias:* ${plan.days}\n\n` +
-        `Escolha a forma de pagamento:`,
-        opts({
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '💳 Cartão de Crédito', callback_data: `pay_card_${planIdx}`, style: 'primary' }],
-              [{ text: '📄 Boleto Bancário', callback_data: `pay_boleto_${planIdx}`, style: 'primary' }]
-            ]
-          }
-        })
-      );
-      return;
-    }
-
-    // Pagamento via Cartão de Crédito
-    if (data.startsWith('pay_card_')) {
-      const planIdx = parseInt(data.substring(9));
-      const plan = PLANS[planIdx];
-      if (!plan) {
-        bot.answerCallbackQuery(callbackQuery.id, { text: 'Plano inválido!' }).catch(() => {});
-        return;
-      }
-      bot.answerCallbackQuery(callbackQuery.id, { text: `Gerando link de pagamento...` }).catch(() => {});
-      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-
-      if (!stripe) {
-        const inGroup = groupChats.has(chatId);
-        const paymentMsg = inGroup
-          ? `❌ Pagamentos indisponíveis.`
-          : `❌ Pagamentos indisponíveis. Contate: ${OWNER_PROFILE}`;
-        return bot.sendMessage(chatId, paymentMsg, opts({ parse_mode: 'Markdown' }));
-      }
-
-      try {
-        const session = await stripe.checkout.sessions.create({
-          payment_method_types: ['card'],
-          line_items: [{
-            price_data: {
-              currency: 'brl',
-              product_data: { name: `Key ${plan.label} - BreachDB Assembly Leak` },
-              unit_amount: plan.priceCents,
-            },
-            quantity: 1,
-          }],
-          mode: 'payment',
-          metadata: { chat_id: String(chatId), days: String(plan.days) },
-          success_url: `${process.env.BASE_URL || 'https://breachdb-production-c6e9.up.railway.app'}/api/pagamento-sucesso?session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: `${process.env.BASE_URL || 'https://breachdb-production-c6e9.up.railway.app'}/api/pagamento-cancelado`,
-        });
-
-        await bot.sendMessage(chatId,
-          `💳 *Pagamento via Cartão — ${plan.label}*\n\n` +
-          `📌 *Valor:* R$${(plan.priceCents / 100).toFixed(0)}\n` +
-          `⏳ *Dias:* ${plan.days}\n\n` +
-          `Clique no link abaixo para pagar:\n` +
-          `🔗 ${session.url}\n\n` +
-          `_Após a confirmação, sua key será enviada automaticamente aqui!_`,
-          opts({ parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: `💰 PAGAR AGORA — R$${(plan.priceCents / 100).toFixed(0)}`, url: session.url }]] } })
-        );
-      } catch (err) {
-        console.error('[STRIPE CARD ERROR]', err.message);
-        bot.sendMessage(chatId, `❌ Erro ao gerar pagamento: ${err.message}`, opts());
-      }
-      return;
-    }
-
-    // Pagamento via Boleto — pede CPF
-    if (data.startsWith('pay_boleto_')) {
-      const planIdx = parseInt(data.substring(11));
-      const plan = PLANS[planIdx];
-      if (!plan) {
-        bot.answerCallbackQuery(callbackQuery.id, { text: 'Plano inválido!' }).catch(() => {});
-        return;
-      }
-      bot.answerCallbackQuery(callbackQuery.id, { text: `📄 Vamos gerar seu boleto...` }).catch(() => {});
-      bot.deleteMessage(chatId, msg.message_id).catch(() => {});
-
-      // Armazena o plano pendente
-      pendingBoleto.set(chatId, { plan, planIdx });
-
-      await bot.sendMessage(chatId,
-        `📄 *Pagamento via Boleto — ${plan.emoji} ${plan.label}*\n\n` +
-        `📌 *Valor:* R$${(plan.priceCents / 100).toFixed(0)}\n` +
-        `⏳ *Dias:* ${plan.days}\n\n` +
-        `Para gerar o boleto, preciso do seu **CPF** (apenas números).\n` +
-        `Exemplo: \`00000000000\`\n\n` +
-        `_Envie o CPF nesta mensagem ou digite /cancelar para sair._`,
-        opts({ parse_mode: 'Markdown' })
-      );
-      return;
-    }
 
   });
 
@@ -5839,28 +5567,7 @@ function getRelativePath(fromPath, toPath) {
   return rel || './';
 }
 
-// Chamado pelo webhook do Stripe quando o pagamento é confirmado
-export async function handlePaymentSuccess(chatId, days) {
-  if (!_writePool || !bot) {
-    console.error('[PAYMENT] Bot ou pool não inicializado');
-    return;
-  }
-  try {
-    const seconds = days * 86400;
-    const { key } = generateKey(seconds);
-    await _writePool.query(`INSERT INTO license_keys (key, duration_seconds) VALUES ($1, $2)`, [key, seconds]);
-    await bot.sendMessage(chatId,
-      `✅ *Pagamento confirmado!* 🎉\n\n` +
-      `🔑 *Sua key:* \`${key}\`\n` +
-      `⏳ *Duração:* ${formatDuration(seconds)}\n\n` +
-      `Para ativar, use: \`/key ${key}\`\n` +
-      `_Ou simplemente cole a key aqui no chat!_`,
-      { parse_mode: 'Markdown' }
-    );
-  } catch (err) {
-    console.error('[PAYMENT KEY ERROR]', err.message);
-  }
-}
+
 
 // ============================================
 // /copyurl — Baixa página web como ZIP

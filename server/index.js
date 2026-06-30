@@ -33,14 +33,8 @@ import speakeasy from 'speakeasy';
 import QRCode from 'qrcode';
 import cors from 'cors';
 import pg from 'pg';
-import { setupBot, handlePaymentSuccess, isMaintenance } from './bot.js';
+import { setupBot, isMaintenance } from './bot.js';
 import { querySIPNI, authenticateSIPNI } from './sipni-api.js';
-import Stripe from 'stripe';
-
-const stripeKey = process.env.STRIPE_SECRET_KEY;
-const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-const stripe = stripeKey && stripeKey !== 'sua_chave_secreta_stripe' ? new Stripe(stripeKey) : null;
-
 import { Readable } from 'stream';
 import QueryStream from 'pg-query-stream';
 import pgCopyStreams from 'pg-copy-streams';
@@ -69,13 +63,12 @@ if (dbUrls.length === 0 && process.env.DATABASE_URL) {
 
 // Cria os pools para cada banco (usados para BUSCA)
 const pools = dbUrls.map((url, i) => {
-  // Remove pooler + channel_binding — conexão direta, mais rápida
-  const directUrl = url.replace(/-pooler/, '').replace(/&?channel_binding=require/gi, '');
+  // Usa conexão pooler (mais estável para Neon)
   const p = new Pool({
-    connectionString: directUrl,
+    connectionString: url,
     max: 20,
     idleTimeoutMillis: 600000,
-    connectionTimeoutMillis: 5000,
+    connectionTimeoutMillis: 15000,
     query_timeout: 35000,
     keepAlive: true,
     keepAliveInitialDelayMillis: 1000,
@@ -447,31 +440,7 @@ setTimeout(async () => {
 // ══════════════════════════════════════════════════════
 app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
-// Keep-alive: pinga a si mesmo a cada 4 min para evitar cold start
-setInterval(() => {
-  const url = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
-  const mod = url.startsWith('https') ? https : http;
-  mod.get(`${url}/api/health`, () => {}).on('error', () => {});
-}, 4 * 60 * 1000);
 
-// DB keep-alive: mantém os 4 pools Neon acordados a cada 3 min
-setInterval(() => {
-  for (const p of pools) {
-    p.query('SELECT 1').catch(() => {});
-  }
-}, 3 * 60 * 1000);
-
-// DB warm-up: aquece todas as conexões na inicialização
-(async () => {
-  for (let i = 0; i < pools.length; i++) {
-    try {
-      await pools[i].query('SELECT 1');
-      console.log(`🔥 [WARM-UP] Pool ${i+1} aquecido`);
-    } catch (e) {
-      console.error(`⚠️ [WARM-UP] Pool ${i+1} falhou:`, e.message);
-    }
-  }
-})();
 
 app.get('/api/db-status', async (req, res) => {
   try {
@@ -1394,72 +1363,7 @@ app.get('/api/export', authMiddleware, async (req, res) => {
 });
 
 
-app.post('/api/checkout', authMiddleware, async (req, res) => {
-  if (!stripe) return res.status(500).json({ error: 'Stripe is not configured' });
-  const { planId } = req.body;
-  let days = 0; let price = 0;
-  if (planId === '1day') { days = 1; price = 1000; }
-  else if (planId === '30days') { days = 30; price = 10000; }
-  else if (planId === '50days') { days = 50; price = 5000; }
-  else return res.status(400).json({ error: 'Invalid plan' });
-  
-  try {
-    const frontendUrl = req.headers.origin || 'http://localhost:5173';
-    const session = await stripe.checkout.sessions.create({
-      payment_method_types: ['card'],
-      line_items: [{
-        price_data: { currency: 'brl', product_data: { name: `Assembly Leak VIP - ${days} Days` }, unit_amount: price },
-        quantity: 1,
-      }],
-      mode: 'payment',
-      success_url: `${frontendUrl}/dashboard?payment=success`,
-      cancel_url: `${frontendUrl}/dashboard?payment=cancel`,
-      metadata: { user_id: String(req.user.id), days: String(days) }
-    });
-    res.json({ url: session.url });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
 
-// ── Stripe Webhook ──
-app.post('/api/stripe-webhook', express.raw({ type: 'application/json' }), async (req, res) => {
-  if (!stripe) return res.status(200).send('Stripe não configurado');
-
-  let event;
-  if (stripeWebhookSecret && stripeWebhookSecret !== 'seu_webhook_secret_stripe') {
-    try {
-      const sig = req.headers['stripe-signature'];
-      event = stripe.webhooks.constructEvent(req.body, sig, stripeWebhookSecret);
-    } catch (err) { return res.status(400).send(`Webhook Error: ${err.message}`); }
-  } else {
-    event = JSON.parse(req.body.toString());
-  }
-
-  if (event.type === 'checkout.session.completed' || event.type === 'payment_intent.succeeded') {
-    const obj = event.data.object;
-    const chatId = obj.metadata?.chat_id;
-    const userId = obj.metadata?.user_id;
-    const days = parseInt(obj.metadata?.days || '0');
-
-    if (userId && days > 0) {
-      console.log(`[STRIPE] Web payment success! User: ${userId}, Days: ${days}`);
-      try {
-        await botPools[0].query(`UPDATE users SET premium_until = GREATEST(COALESCE(premium_until, now()), now()) + ($1::int || ' days')::INTERVAL WHERE id = $2`, [days, userId]);
-      } catch (err) { console.error('[STRIPE WEB error]', err); }
-    } else if (chatId && days > 0) {
-      console.log(`[STRIPE] Telegram payment success! Chat: ${chatId}, Dias: ${days}`);
-      await handlePaymentSuccess(chatId, days);
-    }
-  }
-
-  res.json({ received: true });
-});
-
-// Página de sucesso (opcional)
-app.get('/api/pagamento-sucesso', (req, res) => {
-  res.send(`<html><body style="font-family:sans-serif;text-align:center;padding:40px"><h2>✅ Pagamento confirmado!</h2><p>Sua key será enviada no Telegram.</p></body></html>`);
-});
 
 app.get('/api/pagamento-cancelado', (req, res) => {
   res.send(`<html><body style="font-family:sans-serif;text-align:center;padding:40px"><h2>❌ Pagamento cancelado</h2><p>Volte ao bot e tente novamente.</p></body></html>`);

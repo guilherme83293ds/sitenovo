@@ -82,16 +82,26 @@ async function socialScan(email) {
   const local = extractLocal(email);
   if (!local) return { profiles: [] };
   const checks = [
-    { name: 'GitLab', url: `https://gitlab.com/${local}` },
-    { name: 'Keybase', url: `https://keybase.io/${local}` },
-    { name: 'Instagram', url: `https://www.instagram.com/${local}/` },
-    { name: 'Telegram', url: `https://t.me/${local}` }
+    { name: 'GitHub', url: `https://github.com/${local}`, link: `https://github.com/${local}` },
+    { name: 'GitLab', url: `https://gitlab.com/${local}`, link: `https://gitlab.com/${local}` },
+    { name: 'Twitter/X', url: `https://x.com/${local}`, link: `https://x.com/${local}` },
+    { name: 'Instagram', url: `https://www.instagram.com/${local}/`, link: `https://www.instagram.com/${local}/` },
+    { name: 'Reddit', url: `https://www.reddit.com/user/${local}`, link: `https://www.reddit.com/user/${local}` },
+    { name: 'TikTok', url: `https://www.tiktok.com/@${local}`, link: `https://www.tiktok.com/@${local}` },
+    { name: 'YouTube', url: `https://www.youtube.com/@${local}`, link: `https://www.youtube.com/@${local}` },
+    { name: 'Twitch', url: `https://www.twitch.tv/${local}`, link: `https://www.twitch.tv/${local}` },
+    { name: 'Keybase', url: `https://keybase.io/${local}`, link: `https://keybase.io/${local}` },
+    { name: 'Pinterest', url: `https://www.pinterest.com/${local}`, link: `https://www.pinterest.com/${local}` },
+    { name: 'Medium', url: `https://medium.com/@${local}`, link: `https://medium.com/@${local}` },
+    { name: 'Telegram', url: `https://t.me/${local}`, link: `https://t.me/${local}` },
+    { name: 'Replit', url: `https://replit.com/@${local}`, link: `https://replit.com/@${local}` },
+    { name: 'DEV.to', url: `https://dev.to/${local}`, link: `https://dev.to/${local}` }
   ];
   const results = await Promise.allSettled(
     checks.map(c =>
       fetch(c.url, { method: 'GET', signal: AbortSignal.timeout(3000), redirect: 'manual' })
         .then(r => (r.status === 200 || r.status === 301 || r.status === 302)
-          ? { platform: c.name, url: c.url } : null)
+          ? { platform: c.name, url: c.link } : null)
         .catch(() => null)
     )
   );
@@ -99,7 +109,7 @@ async function socialScan(email) {
   for (const r of results) {
     if (r.status === 'fulfilled' && r.value) profiles.push(r.value);
   }
-  return { profiles, username: local };
+  return { profiles, username: local, total: checks.length };
 }
 
 async function checkGravatar(email) {
@@ -221,7 +231,9 @@ function formatSMTP(data) {
 
 function formatSocial(data) {
   if (!data.profiles.length) return null;
-  return `🔗 *Perfis:* ${data.profiles.map(p => `[${p.platform}](${p.url})`).join(' • ')}`;
+  const total = data.total || data.profiles.length;
+  const list = data.profiles.map(p => `[${p.platform}](${p.url})`).join(' • ');
+  return `🔗 *Perfis sociais:* ${data.profiles.length}/${total}\n${list}`;
 }
 
 function formatGravatar(data) {
@@ -240,7 +252,12 @@ function formatHunter(data) {
   if (data.webmail !== undefined) lines.push(`• Webmail: ${data.webmail ? '✅ Sim' : '❌ Não'}`);
   if (data.mx_records !== undefined) lines.push(`• MX records: ${data.mx_records ? '✅ Sim' : '❌ Não'}`);
   if (data.smtp_check !== undefined) lines.push(`• SMTP check: ${data.smtp_check ? '✅ Passou' : '❌ Falhou'}`);
-  if (data.sources?.length > 0) lines.push(`• Fontes: ${data.sources.slice(0, 3).join(', ')}`);
+  if (data.accept_all !== undefined) lines.push(`• Accept all: ${data.accept_all ? '⚠️ Sim' : '✅ Não'}`);
+  if (data.block !== undefined) lines.push(`• Bloqueado: ${data.block ? '🚫 Sim' : '✅ Não'}`);
+  if (data.sources?.length > 0) {
+    const srcList = data.sources.slice(0, 5).map(s => s.uri ? `[${s.domain || s}](${s.uri})` : (s.domain || s));
+    lines.push(`• Fontes: ${srcList.join(', ')}`);
+  }
   return lines.join('\n');
 }
 
@@ -255,8 +272,11 @@ function formatEmailRep(data) {
     if (d.malicious_activity) lines.push(`• Ativ\. maliciosa: ⚠️`);
     if (d.credentials_leaked) lines.push(`• Creds vazadas: ⚠️`);
     if (d.data_breach) lines.push(`• Data breach: ⚠️`);
-    if (d.first_seen) lines.push(`• 1ª vez: ${d.first_seen}`);
-    if (d.last_seen) lines.push(`• Última: ${d.last_seen}`);
+    if (d.first_seen) lines.push(`• 1ª vez visto: ${d.first_seen}`);
+    if (d.last_seen) lines.push(`• Última vez: ${d.last_seen}`);
+    if (d.domain_reputation) lines.push(`• Rep\. domínio: \`${d.domain_reputation}\``);
+    if (d.domain_exists !== undefined) lines.push(`• Domínio existe: ${d.domain_exists ? '✅' : '❌'}`);
+    if (d.free_provider !== undefined) lines.push(`• Provedor gratuito: ${d.free_provider ? '✅ Sim' : '❌ Não'}`);
     if (d.disposable !== undefined) lines.push(`• Descartável: ${d.disposable ? '⚠️' : '✅'}`);
   }
   return lines.join('\n');
